@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>바비야기 HACCP 보고 자동화</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha512/0.8.0/sha512.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/aes-js/3.1.2/index.min.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--line:#e3e6ea;--ink:#1f2933;--sub:#6b7785;--brand:#2f6f4e;--brand2:#dff0e6;--warn:#c0392b;--warnbg:#fdecea;}
+*{box-sizing:border-box;}
+body{margin:0;font-family:'Malgun Gothic','맑은 고딕',system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;}
+header{background:var(--brand);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;}
+header h1{font-size:17px;margin:0;font-weight:700;}
+header .sub{font-size:12px;opacity:.85;}
+nav{display:flex;gap:4px;background:#fff;border-bottom:1px solid var(--line);padding:0 12px;flex-wrap:wrap;}
+nav button{border:none;background:none;padding:12px 16px;font-size:14px;cursor:pointer;color:var(--sub);border-bottom:3px solid transparent;font-weight:600;}
+nav button.active{color:var(--brand);border-bottom-color:var(--brand);}
+.wrap{max-width:1000px;margin:18px auto;padding:0 16px;}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px;}
+.card h2{font-size:15px;margin:0 0 12px;}
+.muted{color:var(--sub);font-size:12.5px;}
+.panel{display:none;}
+.panel.active{display:block;}
+button.btn{background:var(--brand);color:#fff;border:none;border-radius:7px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer;}
+button.btn.gray{background:#5a6572;}
+button.btn.outline{background:#fff;color:var(--brand);border:1px solid var(--brand);}
+button.btn:disabled{opacity:.5;cursor:default;}
+input,select{font-size:13.5px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font-family:inherit;}
+label.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--sub);}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;}
+table{border-collapse:collapse;width:100%;font-size:12.5px;}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:center;}
+th{background:#f0f2f5;font-weight:700;}
+td.l,th.l{text-align:left;}
+.drop{border:2px dashed #b9c2cc;border-radius:10px;padding:26px;text-align:center;color:var(--sub);cursor:pointer;background:#fafbfc;}
+.drop.hover{border-color:var(--brand);background:var(--brand2);}
+.pill{display:inline-block;background:var(--brand2);color:var(--brand);border-radius:20px;padding:2px 10px;font-size:11.5px;font-weight:700;margin-left:6px;}
+.warn{background:var(--warnbg);color:var(--warn);border-radius:7px;padding:10px 12px;font-size:12.5px;margin-top:10px;}
+.ok{background:var(--brand2);color:var(--brand);border-radius:7px;padding:10px 12px;font-size:12.5px;margin-top:10px;}
+.tag{font-size:11px;padding:1px 7px;border-radius:5px;background:#eef1f4;color:var(--sub);}
+.tag.domae{background:#fde8d0;color:#9a5b16;}
+.del{color:var(--warn);cursor:pointer;font-weight:700;}
+@media print{nav,header .sub,.noprint{display:none!important;}body{background:#fff;}.card{border:none;padding:0;}.wrap{margin:0;max-width:none;}}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>바비야기 HACCP 보고 자동화</h1><div class="sub">엑셀 없이 브라우저에서 — 판매 업로드 · 수기 입력 · 보고서 출력</div></div>
+</header>
+<nav id="nav">
+  <button data-tab="upload" class="active">① 판매 업로드</button>
+  <button data-tab="prod">② 생산일지</button>
+  <button data-tab="mat">③ 매입·원료수불</button>
+  <button data-tab="report">④ 보고서(PDF)</button>
+  <button data-tab="data">⑤ 데이터 관리</button>
+</nav>
+<div class="wrap" id="app"></div>
+<script>
+"use strict";
+const CANON=["채수팩","요리한끗","생강비책","순맛된장","순맛간장","순한배추김치","순한깍두기","순한백김치","순한빨간장","아기첫물","순한고기양념장","순한나박김치"];
+const KIM4=["순한배추김치","순한깍두기","순한백김치","순한나박김치"];
+const KW=[["채수팩","채수팩"],["요리한끗","요리한끗"],["생강비책","생강비책"],["고기양념장","순한고기양념장"],["빨간장","순한빨간장"],["순쌀된장","순맛된장"],["순맛된장","순맛된장"],["된장","순맛된장"],["저당맛간장","순맛간장"],["저염맛간장","순맛간장"],["순맛간장","순맛간장"],["맛간장","순맛간장"],["간장","순맛간장"],["배추김치","순한배추김치"],["깍두기","순한깍두기"],["백김치","순한백김치"],["나박김치","순한나박김치"],["아기첫물","아기첫물"],["첫물","아기첫물"]];
+const NONPROD=["아이스팩","비품","포장","보냉","택배비","배송비"];
+function kwFirst(s){for(const[k,p]of KW){if(s.includes(k))return p;}return null;}
+function resolveOpt(opt){
+  const res={}; const add=(p,n)=>{res[p]=(res[p]||0)+n;};
+  const tail = opt.includes(":")? opt.split(":").slice(1).join(":").trim() : opt;
+  if(NONPROD.some(k=>opt.includes(k)) && !kwFirst(opt)) return {products:{},note:"제외(비품)"};
+  if(/4\s*종\s*set/i.test(opt)||opt.includes("김치4종")||opt.includes("유아김치4종")){
+    KIM4.forEach(p=>add(p,1));
+    opt.split(/[,，]/).forEach(part=>{if(part.includes("4종"))return;const p=kwFirst(part);if(p)add(p,1);});
+    return {products:res,note:"확인필요:4종set"};
+  }
+  let mult=1,extra=0,m;
+  if(m=tail.match(/(\d+)\s*팩\s*세트/))mult=+m[1];
+  if(m=tail.match(/(\d+)\s*박스/))mult=+m[1];
+  const re=/\+\s*(\d+)\s*팩/g; while(m=re.exec(tail))extra+=+m[1];
+  if(mult>1||extra>0){const p=kwFirst(tail)||kwFirst(opt);if(p)add(p,mult+extra);return {products:res,note:(mult+extra>1?"확인필요:수량x"+(mult+extra):"")};}
+  if(tail.includes("+")){tail.split("+").forEach(part=>{const p=kwFirst(part);if(p)add(p,1);});if(Object.keys(res).length)return {products:res,note:"확인필요:복수구성"};}
+  const p=kwFirst(tail)||kwFirst(opt); if(p)return {products:{[p]:1},note:""};
+  return {products:{},note:"확인필요:매칭불가"};
+}
+// ---------- 상태 ----------
+const KEY="babiyagi_haccp_v1";
+let ST={sales:[],production:[],purchases:[],optionMap:{},reviews:[]};
+function load(){try{const j=localStorage.getItem(KEY);if(j)ST=Object.assign(ST,JSON.parse(j));}catch(e){}}
+function save(){localStorage.setItem(KEY,JSON.stringify(ST));}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function fmtDate(d){if(!d)return"";if(d instanceof Date)return d.toISOString().slice(0,10);const s=String(d);const m=s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);if(m)return m[1]+"-"+String(m[2]).padStart(2,"0")+"-"+String(m[3]).padStart(2,"0");return s.slice(0,10);}
+// ---------- 복호화 (ECMA-376 agile) ----------
+function H(){const h=sha512.create();for(const b of arguments)h.update(b);return new Uint8Array(h.arrayBuffer());}
+function le32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n>>>0,true);return b;}
+function concat(a,b){const c=new Uint8Array(a.length+b.length);c.set(a,0);c.set(b,a.length);return c;}
+function u16le(s){const b=new Uint8Array(s.length*2);for(let i=0;i<s.length;i++)new DataView(b.buffer).setUint16(i*2,s.charCodeAt(i),true);return b;}
+function aesCbcDec(key,iv,data){const cbc=new aesjs.ModeOfOperation.cbc(key,iv);return cbc.decrypt(data);}
+function decryptXlsx(buf,password){
+  const cfb=XLSX.CFB.read(new Uint8Array(buf),{type:"array"});
+  const find=n=>{const e=XLSX.CFB.find(cfb,n);return e?new Uint8Array(e.content):null;};
+  const info=find("EncryptionInfo"); if(!info) return new Uint8Array(buf); // 암호화 아님
+  const pkg=find("EncryptedPackage");
+  const xml=new TextDecoder().decode(info.slice(8));
+  const A=(f,a)=>{const m=f.match(new RegExp(a+'="([^"]*)"'));return m?m[1]:null;};
+  const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+  const kdF=xml.match(/<keyData[^>]*\/?>/)[0], ekF=xml.match(/<(?:p:)?encryptedKey[^>]*\/?>/)[0];
+  const kdSalt=b64(A(kdF,"saltValue")), kdBlock=+A(kdF,"blockSize");
+  const spin=+A(ekF,"spinCount"), ekSalt=b64(A(ekF,"saltValue")), keyBits=+A(ekF,"keyBits"), ekBlock=+A(ekF,"blockSize"), ekv=b64(A(ekF,"encryptedKeyValue"));
+  let h=H(ekSalt,u16le(password));
+  for(let i=0;i<spin;i++)h=H(le32(i),h);
+  const key=H(h,new Uint8Array([0x14,0x6e,0x0b,0xe7,0xab,0xac,0xd0,0xd6])).slice(0,keyBits/8);
+  const secret=aesCbcDec(key,ekSalt.slice(0,ekBlock),ekv);
+  const total=new DataView(pkg.buffer,pkg.byteOffset,8).getUint32(0,true);
+  let out=new Uint8Array(0),pos=8,seg=0;
+  while(pos<pkg.length){const iv=H(kdSalt,le32(seg)).slice(0,kdBlock);out=concat(out,aesCbcDec(secret,iv,pkg.slice(pos,pos+4096)));pos+=4096;seg++;}
+  return out.slice(0,total);
+}
+// ---------- 파일 파싱 ----------
+function aoaFirstSheet(data){const wb=XLSX.read(data,{type:"array"});const ws=wb.Sheets[wb.SheetNames[0]];return XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});}
+function isJasamol(rows){const h=(rows[0]||[]).map(String);return h.includes("판매채널")&&h.includes("옵션명");}
+function parseJasamol(rows){
+  const h=rows[0].map(String); const gi=(n,d)=>{const i=h.indexOf(n);return i<0?d:i;};
+  const iO=gi("주문번호",1),iSeg=gi("주문섹션품목번호",15),iQ=gi("구매수량",16),iPn=gi("상품명",17),iOpt=gi("옵션명",18),iNm=gi("주문자 이름",8),iDt=gi("주문일",37);
+  const items=[];
+  for(let r=1;r<rows.length;r++){const row=rows[r];if(!row[iO]&&row[iO]!==0)continue;const opt=row[iOpt];if(!opt)continue;
+    const seg=String(row[iSeg]||"").replace(/\D/g,"")||String(row[iO]).replace(/\D/g,"");
+    items.push({spo:seg,ordno:String(row[iO]),date:fmtDate(row[iDt]),channel:"자사몰",opt:String(opt).trim(),qty:(+row[iQ]||1),name:String(row[iNm]||"")});}
+  return items;
+}
+function parseSmartstore(rows,fkey){
+  const items=[];let cur=null,midx=0,mline=0;
+  for(let r=0;r<rows.length;r++){const row=rows[r];const opt=row[20];if(!opt)continue;
+    const ordno=row[1],dt=row[11],qty=(+row[15]||1),name=String(row[7]||"");
+    if(ordno===""||ordno==null){if(cur!==name){midx++;cur=name;}mline++;
+      items.push({spo:"99"+fkey+String(mline).padStart(4,"0"),ordno:"M"+fkey+"-"+String(midx).padStart(2,"0"),date:fkey.slice(0,4)+"-"+fkey.slice(4,6)+"-"+fkey.slice(6,8),channel:"스마트스토어",opt:String(opt).trim(),qty,name,manual:true});}
+    else{items.push({spo:String(row[0]),ordno:String(ordno),date:fmtDate(dt),channel:"스마트스토어",opt:String(opt).trim(),qty,name});}}
+  return items;
+}
+function dateKeyFromName(fn){const m=fn.match(/(\d{4})(\d{2})(\d{2})/);return m?m[1]+m[2]+m[3]:new Date().toISOString().slice(0,10).replace(/-/g,"");}
+</script>
+<script>
+const $=s=>document.querySelector(s); const app=$("#app");
+let TAB="upload";
+function existingSpo(){return new Set(ST.sales.map(s=>s.spo));}
+function buyerType(name){return (name&&String(name).includes("점"))?"도매":"소매";}
+function num(v){return (typeof v==="number")?v:(parseFloat(v)||0);}
+
+function looksEncrypted(data){try{const cfb=XLSX.CFB.read(data,{type:"array"});return !!XLSX.CFB.find(cfb,"EncryptionInfo");}catch(e){return false;}}
+
+async function processFiles(files,password){
+  const seen=existingSpo(); let added=0,dup=0,fileN=0; const newReviews=[];
+  for(const file of files){
+    if(!/\.xlsx?$/i.test(file.name))continue;
+    let data=new Uint8Array(await file.arrayBuffer());
+    if(looksEncrypted(data)){
+      if(!password){throw new Error("암호화된 파일입니다. 비밀번호를 입력하세요: "+file.name);}
+      try{data=decryptXlsx(data,password);}catch(e){throw new Error("복호화 실패(비밀번호 확인): "+file.name);}
+    }
+    const rows=aoaFirstSheet(data); const fkey=dateKeyFromName(file.name);
+    const items=isJasamol(rows)?parseJasamol(rows):parseSmartstore(rows,fkey);
+    for(const it of items){
+      if(seen.has(it.spo)){dup++;continue;} seen.add(it.spo);
+      let pr,note;
+      if(ST.optionMap[it.opt]){pr=ST.optionMap[it.opt];note="";}
+      else{const r=resolveOpt(it.opt);pr=r.products;note=r.note;ST.optionMap[it.opt]=pr;if(note.startsWith("확인필요")||note==="제외(비품)"){newReviews.push({opt:it.opt,note,products:pr});}}
+      const products={}; for(const p in pr){products[p]=(products[p]||0)+pr[p]*it.qty;}
+      ST.sales.push({spo:it.spo,ordno:it.ordno,date:it.date,channel:it.channel,type:buyerType(it.name),buyer:it.name,products,manual:!!it.manual});
+      added++;
+    }
+    fileN++;
+  }
+  ST.reviews=(ST.reviews||[]).concat(newReviews); save();
+  return {added,dup,fileN,newReviews};
+}
+
+// ---------- 렌더 ----------
+function setTab(t){TAB=t;document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("active",b.dataset.tab===t));render();}
+document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+
+function render(){
+  if(TAB==="upload")renderUpload();
+  else if(TAB==="prod")renderProd();
+  else if(TAB==="mat")renderMat();
+  else if(TAB==="report")renderReport();
+  else if(TAB==="data")renderData();
+}
+
+function renderUpload(){
+  const salesCnt=ST.sales.length;
+  const rev=(ST.reviews||[]).filter(r=>r.note&&r.note.startsWith("확인필요"));
+  app.innerHTML=`
+  <div class="card">
+    <h2>온라인 판매내역 업로드 <span class="pill">스마트스토어 · 자사몰 자동감지</span></h2>
+    <p class="muted">스마트스토어 발주발송관리(암호화) 또는 자사몰 판매내역 엑셀을 올리면, 자동으로 제품 수량으로 환산해 누적합니다. 같은 주문은 중복 추가되지 않습니다.</p>
+    <div class="row" style="margin:8px 0 12px">
+      <label class="fld">스마트스토어 비밀번호 <input id="pw" value="0000" style="width:90px"></label>
+    </div>
+    <div class="drop" id="drop">📂 여기로 엑셀 파일을 끌어다 놓거나, 클릭해서 선택하세요<br><span class="muted">(여러 개 한꺼번에 가능 / .xlsx)</span></div>
+    <input type="file" id="file" accept=".xlsx,.xls" multiple hidden>
+    <div id="upmsg"></div>
+  </div>
+  <div class="card">
+    <h2>누적 현황</h2>
+    <p>누적 판매 라인: <b>${salesCnt}</b>건 &nbsp;|&nbsp; 등록 옵션: <b>${Object.keys(ST.optionMap).length}</b>종 &nbsp;|&nbsp; 확인필요 옵션: <b style="color:var(--warn)">${rev.length}</b>종</p>
+    ${rev.length?`<div class="warn"><b>검토 필요 옵션</b> (세트/묶음/수량 — 환산이 맞는지 확인):<br>${rev.slice(0,30).map(r=>`· [${r.note.replace("확인필요:","")}] ${r.opt} → ${Object.entries(r.products).map(([p,q])=>p+"×"+q).join(", ")||"(없음)"}`).join("<br>")}</div>`:`<div class="ok">확인필요 옵션이 없습니다.</div>`}
+  </div>`;
+  const drop=$("#drop"),file=$("#file");
+  drop.onclick=()=>file.click();
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add("hover");};
+  drop.ondragleave=()=>drop.classList.remove("hover");
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove("hover");handleFiles(e.dataTransfer.files);};
+  file.onchange=e=>handleFiles(e.target.files);
+}
+async function handleFiles(files){
+  const msg=$("#upmsg"); msg.innerHTML=`<div class="muted" style="margin-top:10px">처리 중... (암호 해제는 몇 초 걸릴 수 있습니다)</div>`;
+  try{
+    const pw=$("#pw").value.trim();
+    const r=await processFiles(files,pw);
+    msg.innerHTML=`<div class="ok">완료! ${r.fileN}개 파일 · 신규 ${r.added}건 추가 · 중복 ${r.dup}건 건너뜀${r.newReviews.length?` · 확인필요 ${r.newReviews.length}종`:""}</div>`;
+    setTimeout(renderUpload,1200);
+  }catch(e){msg.innerHTML=`<div class="warn">${e.message}</div>`;}
+}
+
+function renderProd(){
+  const rows=(ST.production||[]).slice().sort((a,b)=>a.date<b.date?1:-1);
+  app.innerHTML=`
+  <div class="card">
+    <h2>생산일지 입력 <span class="pill">수기</span></h2>
+    <p class="muted">생산한 제품과 CCP(가열온도·염도 등)를 기록합니다. 손글씨 명부를 보고 직접 입력하세요.</p>
+    <div class="row">
+      <label class="fld">일자<input type="date" id="p_date"></label>
+      <label class="fld">제품<select id="p_prod">${CANON.map(p=>`<option>${p}</option>`).join("")}<option>기타</option></select></label>
+      <label class="fld">수량/박스<input id="p_qty" type="number" step="any" style="width:90px"></label>
+      <label class="fld">가열온도(℃)<input id="p_heat" type="number" step="any" style="width:90px"></label>
+      <label class="fld">염도(%)<input id="p_salt" type="number" step="any" style="width:80px"></label>
+      <label class="fld">금속검출<select id="p_metal"><option>적합</option><option>부적합</option><option>해당없음</option></select></label>
+      <label class="fld" style="flex:1;min-width:160px">비고<input id="p_note" style="width:100%"></label>
+      <button class="btn" id="p_add">추가</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>생산 기록 (${rows.length})</h2>
+    <table><thead><tr><th>일자</th><th>제품</th><th>수량</th><th>가열℃</th><th>염도%</th><th>금속검출</th><th class="l">비고</th><th></th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${r.date}</td><td>${r.product}</td><td>${r.qty||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l">${r.note||""}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`).join("")||`<tr><td colspan=8 class="muted">아직 없음</td></tr>`}</tbody></table>
+  </div>`;
+  $("#p_date").value=new Date().toISOString().slice(0,10);
+  $("#p_add").onclick=()=>{const e={id:uid(),date:$("#p_date").value,product:$("#p_prod").value,qty:$("#p_qty").value,heat:$("#p_heat").value,salt:$("#p_salt").value,metal:$("#p_metal").value,note:$("#p_note").value};if(!e.date){alert("일자를 입력하세요");return;}ST.production.push(e);save();renderProd();};
+  app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.production=ST.production.filter(r=>r.id!==x.dataset.del);save();renderProd();});
+}
+
+function renderMat(){
+  const rows=(ST.purchases||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
+  const bal={}; const withBal=rows.map(r=>{bal[r.material]=(bal[r.material]||0)+num(r.inKg)-num(r.useKg);return Object.assign({},r,{balance:bal[r.material]});});
+  withBal.reverse();
+  app.innerHTML=`
+  <div class="card">
+    <h2>매입 · 원료수불 입력 <span class="pill">수기</span></h2>
+    <p class="muted">원료 입고/사용을 기록하면 잔량(재고)이 자동 계산됩니다. (배합비 없이 입고·사용만으로 수불 관리)</p>
+    <div class="row">
+      <label class="fld">일자<input type="date" id="m_date"></label>
+      <label class="fld">원료<input id="m_mat" list="matlist" style="width:120px"><datalist id="matlist">${[...new Set((ST.purchases||[]).map(p=>p.material))].map(m=>`<option>${m}</option>`).join("")}</datalist></label>
+      <label class="fld">입고(kg)<input id="m_in" type="number" step="any" style="width:90px"></label>
+      <label class="fld">사용(kg)<input id="m_use" type="number" step="any" style="width:90px"></label>
+      <label class="fld">박스<input id="m_box" style="width:70px"></label>
+      <label class="fld" style="flex:1;min-width:140px">비고<input id="m_note" style="width:100%"></label>
+      <button class="btn" id="m_add">추가</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>원료 수불 기록 (${rows.length})</h2>
+    <table><thead><tr><th>일자</th><th class="l">원료</th><th>입고kg</th><th>사용kg</th><th>잔량kg</th><th>박스</th><th class="l">비고</th><th></th></tr></thead>
+    <tbody>${withBal.map(r=>`<tr><td>${r.date}</td><td class="l">${r.material}</td><td>${num(r.inKg)||""}</td><td>${num(r.useKg)||""}</td><td><b>${r.balance.toFixed(1)}</b></td><td>${r.box||""}</td><td class="l">${r.note||""}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`).join("")||`<tr><td colspan=8 class="muted">아직 없음</td></tr>`}</tbody></table>
+  </div>`;
+  $("#m_date").value=new Date().toISOString().slice(0,10);
+  $("#m_add").onclick=()=>{const e={id:uid(),date:$("#m_date").value,material:$("#m_mat").value.trim(),inKg:$("#m_in").value,useKg:$("#m_use").value,box:$("#m_box").value,note:$("#m_note").value};if(!e.date||!e.material){alert("일자·원료를 입력하세요");return;}ST.purchases.push(e);save();renderMat();};
+  app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.purchases=ST.purchases.filter(r=>r.id!==x.dataset.del);save();renderMat();});
+}
+</script>
+<script>
+function monthsAvailable(){
+  const s=new Set();
+  ST.sales.forEach(x=>x.date&&s.add(x.date.slice(0,7)));
+  (ST.production||[]).forEach(x=>x.date&&s.add(x.date.slice(0,7)));
+  (ST.purchases||[]).forEach(x=>x.date&&s.add(x.date.slice(0,7)));
+  const arr=[...s].filter(Boolean).sort().reverse();
+  if(!arr.length)arr.push(new Date().toISOString().slice(0,7));
+  return arr;
+}
+let RMONTH=null;
+function renderReport(){
+  const months=monthsAvailable(); if(!RMONTH||!months.includes(RMONTH))RMONTH=months[0];
+  app.innerHTML=`
+  <div class="card noprint">
+    <h2>HACCP 보고서 생성</h2>
+    <div class="row">
+      <label class="fld">대상 월<select id="r_month">${months.map(m=>`<option ${m===RMONTH?"selected":""}>${m}</option>`).join("")}</select></label>
+      <button class="btn" id="r_print">🖨️ PDF로 인쇄·저장</button>
+      <span class="muted">인쇄 대화상자에서 "PDF로 저장"을 선택하세요.</span>
+    </div>
+  </div>
+  <div id="reportArea"></div>`;
+  $("#r_month").onchange=e=>{RMONTH=e.target.value;buildReport();};
+  $("#r_print").onclick=()=>window.print();
+  buildReport();
+}
+function buildReport(){
+  const m=RMONTH; const inM=d=>d&&d.slice(0,7)===m;
+  const sales=ST.sales.filter(s=>inM(s.date));
+  const prod=(ST.production||[]).filter(p=>inM(p.date)).sort((a,b)=>a.date<b.date?-1:1);
+  const pur=(ST.purchases||[]).filter(p=>inM(p.date)).sort((a,b)=>a.date<b.date?-1:1);
+  // 판매현황 요약: 제품별 소매/도매 수량
+  const sumP={}; CANON.forEach(p=>sumP[p]={소매:0,도매:0});
+  sales.forEach(s=>{for(const p in s.products){if(!sumP[p])sumP[p]={소매:0,도매:0};sumP[p][s.type]+=s.products[p];}});
+  const orderCnt=new Set(sales.map(s=>s.ordno)).size;
+  // 원료수불: 기초재고(이전월말 누적) + 당월
+  const matSet=[...new Set((ST.purchases||[]).map(p=>p.material))];
+  const matRows=matSet.map(mat=>{
+    let open=0; (ST.purchases||[]).filter(p=>p.material===mat&&p.date<m+"-01").forEach(p=>{open+=num(p.inKg)-num(p.useKg);});
+    let inSum=0,useSum=0; pur.filter(p=>p.material===mat).forEach(p=>{inSum+=num(p.inKg);useSum+=num(p.useKg);});
+    return {mat,open,inSum,useSum,close:open+inSum-useSum};
+  }).filter(r=>r.open||r.inSum||r.useSum);
+  const today=new Date().toISOString().slice(0,10);
+  const tbl=(head,body)=>`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  $("#reportArea").innerHTML=`
+  <div class="card">
+    <div style="text-align:center;margin-bottom:6px"><div style="font-size:19px;font-weight:800">바비야기 HACCP 월간 보고서</div>
+    <div class="muted">대상 기간: ${m} &nbsp;·&nbsp; 작성일: ${today} &nbsp;·&nbsp; 작성자/승인자: __________</div></div>
+  </div>
+  <div class="card"><h2>1. 월간 집계 요약</h2>
+    ${tbl(`<tr><th>주문 건수</th><th>판매 라인</th><th>총 판매수량(개)</th><th>생산 기록</th><th>원료 품목수</th></tr>`,
+      `<tr><td>${orderCnt}</td><td>${sales.length}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td><td>${prod.length}</td><td>${matRows.length}</td></tr>`)}
+  </div>
+  <div class="card"><h2>2. 제품별 판매현황 (원료수불 기초자료)</h2>
+    ${tbl(`<tr><th class="l">제품</th><th>소매</th><th>도매</th><th>합계</th></tr>`,
+      CANON.map(p=>`<tr><td class="l">${p}</td><td>${sumP[p].소매||""}</td><td>${sumP[p].도매||""}</td><td><b>${(sumP[p].소매+sumP[p].도매)||""}</b></td></tr>`).join("")+
+      `<tr style="background:#f0f2f5;font-weight:700"><td class="l">합계</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].도매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td></tr>`)}
+  </div>
+  <div class="card"><h2>3. 생산일지</h2>
+    ${prod.length?tbl(`<tr><th>일자</th><th>제품</th><th>수량</th><th>가열℃</th><th>염도%</th><th>금속검출</th><th class="l">비고</th></tr>`,
+      prod.map(r=>`<tr><td>${r.date}</td><td>${r.product}</td><td>${r.qty||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l">${r.note||""}</td></tr>`).join("")):`<p class="muted">해당 월 생산 기록이 없습니다. ②생산일지 탭에서 입력하세요.</p>`}
+  </div>
+  <div class="card"><h2>4. 원료수불부 (입고·사용·재고)</h2>
+    ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>사용</th><th>기말재고</th></tr>`,
+      matRows.map(r=>`<tr><td class="l">${r.mat}</td><td>${r.open.toFixed(1)}</td><td>${r.inSum.toFixed(1)}</td><td>${r.useSum.toFixed(1)}</td><td><b>${r.close.toFixed(1)}</b></td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다. ③매입·원료수불 탭에서 입력하세요.</p>`}
+    <p class="muted" style="margin-top:8px">단위: kg</p>
+  </div>`;
+}
+function renderData(){
+  app.innerHTML=`
+  <div class="card"><h2>데이터 관리</h2>
+    <p>모든 데이터는 이 브라우저에 저장됩니다. 정기적으로 <b>백업파일</b>을 받아두세요(PC 이전·복구용).</p>
+    <p class="muted">판매 ${ST.sales.length}건 · 생산 ${(ST.production||[]).length}건 · 원료수불 ${(ST.purchases||[]).length}건 · 옵션 ${Object.keys(ST.optionMap).length}종</p>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="d_exp">💾 백업파일 내려받기 (JSON)</button>
+      <button class="btn outline" id="d_imp">📥 백업파일 불러오기</button>
+      <input type="file" id="d_impf" accept=".json" hidden>
+      <button class="btn gray" id="d_clr">전체 삭제</button>
+    </div>
+    <div id="d_msg"></div>
+  </div>
+  <div class="card"><h2>옵션 매핑 (${Object.keys(ST.optionMap).length})</h2>
+    <p class="muted">옵션 → 제품 환산 사전입니다. 잘못된 매핑이 있으면 알려주세요(다음 버전에서 편집 기능 추가).</p>
+    <table><thead><tr><th class="l">옵션</th><th class="l">제품 환산</th></tr></thead><tbody>
+    ${Object.entries(ST.optionMap).slice(0,200).map(([o,p])=>`<tr><td class="l">${o}</td><td class="l">${Object.entries(p).map(([k,v])=>k+"×"+v).join(", ")||'<span style="color:var(--warn)">(없음)</span>'}</td></tr>`).join("")}
+    </tbody></table>
+  </div>`;
+  $("#d_exp").onclick=()=>{const blob=new Blob([JSON.stringify(ST,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="바비야기HACCP백업_"+new Date().toISOString().slice(0,10)+".json";a.click();};
+  $("#d_imp").onclick=()=>$("#d_impf").click();
+  $("#d_impf").onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());ST=Object.assign({sales:[],production:[],purchases:[],optionMap:{},reviews:[]},j);save();$("#d_msg").innerHTML=`<div class="ok">불러오기 완료</div>`;setTimeout(renderData,800);}catch(e){$("#d_msg").innerHTML=`<div class="warn">파일을 읽을 수 없습니다</div>`;}};
+  $("#d_clr").onclick=()=>{if(confirm("정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다. (먼저 백업을 권장)")){ST={sales:[],production:[],purchases:[],optionMap:{},reviews:[]};save();renderData();}};
+}
+// 초기화
+load(); render();
+</script>
+</body>
+</html>
