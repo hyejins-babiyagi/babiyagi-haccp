@@ -54,9 +54,10 @@ td.l,th.l{text-align:left;}
   <button data-tab="upload" class="active">① 판매 업로드</button>
   <button data-tab="prod">② 생산일지</button>
   <button data-tab="inspect">③ 육안검사·입고</button>
-  <button data-tab="recipe">④ 배합비</button>
-  <button data-tab="report">⑤ 보고서(PDF)</button>
-  <button data-tab="data">⑥ 데이터 관리</button>
+  <button data-tab="waste">④ 폐기물 반출</button>
+  <button data-tab="recipe">⑤ 배합비</button>
+  <button data-tab="report">⑥ 보고서(PDF)</button>
+  <button data-tab="data">⑦ 데이터 관리</button>
 </nav>
 <div class="wrap" id="app"></div>
 <script>
@@ -105,9 +106,10 @@ const PROCESS_YIELD={"절인배추":{raw:"배추",yield:0.8},"절인무":{raw:"�
 const NO_RECIPE_NOTE=["채수팩","요리한끗","아기첫물"];
 // ---------- 상태 ----------
 const KEY="babiyagi_haccp_v1";
-let ST={sales:[],production:[],purchases:[],inspections:[],optionMap:{},reviews:[],recipes:null};
+let ST={sales:[],production:[],purchases:[],inspections:[],wastes:[],optionMap:{},reviews:[],recipes:null};
 function load(){try{const j=localStorage.getItem(KEY);if(j)ST=Object.assign(ST,JSON.parse(j));}catch(e){}
   if(!ST.inspections)ST.inspections=[];
+  if(!ST.wastes)ST.wastes=[];
   if(!ST.recipes || ST.recipeVer!==RECIPE_VER){ST.recipes=JSON.parse(JSON.stringify(RECIPES_DEFAULT));ST.recipeVer=RECIPE_VER;save();}
 }
 // 1회 생산(product, kg)의 원재료 사용량 (전처리 수율로 원재료 환산)
@@ -127,15 +129,27 @@ function recipeWaste(product,kg){
   for(const ing in rc.ing){ const pc=PROCESS_YIELD[ing]; if(pc){ const amt=rc.ing[ing]*f; w[pc.raw]=(w[pc.raw]||0)+(amt/pc.yield-amt); } }
   return w;
 }
+// 생산기록 1건의 실제 원물 사용량(저장된 라인 우선) — 전처리 수율 환산 포함
+function prodUsage(p){
+  const use={}; const ls=(p.lines&&p.lines.length)?p.lines:null;
+  if(ls){ ls.forEach(l=>{ if(!l.mat)return; const amt=num(l.kg); const pc=PROCESS_YIELD[l.mat];
+      if(pc)use[pc.raw]=(use[pc.raw]||0)+amt/pc.yield; else use[l.mat]=(use[l.mat]||0)+amt; }); return use; }
+  return recipeUsage(p.product,p.prodKg);
+}
+function prodWaste(p){
+  const w={}; const ls=(p.lines&&p.lines.length)?p.lines:null;
+  if(ls){ ls.forEach(l=>{ const pc=PROCESS_YIELD[l.mat]; if(pc){const amt=num(l.kg); w[pc.raw]=(w[pc.raw]||0)+(amt/pc.yield-amt);} }); return w; }
+  return recipeWaste(p.product,p.prodKg);
+}
 function usageByMaterial(filterFn){
   const use={};
-  (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=recipeUsage(p.product,p.prodKg); for(const m in u)use[m]=(use[m]||0)+u[m]; });
+  (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=prodUsage(p); for(const m in u)use[m]=(use[m]||0)+u[m]; });
   (ST.purchases||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; if(num(p.useKg))use[p.material]=(use[p.material]||0)+num(p.useKg); });
   return use;
 }
 function wasteByMaterial(filterFn){
   const w={};
-  (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=recipeWaste(p.product,p.prodKg); for(const m in u)w[m]=(w[m]||0)+u[m]; });
+  (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=prodWaste(p); for(const m in u)w[m]=(w[m]||0)+u[m]; });
   return w;
 }
 // 원료별 입고량 (육안검사 중량 + 레거시 매입 inKg)
@@ -282,6 +296,7 @@ function render(){
   if(TAB==="upload")renderUpload();
   else if(TAB==="prod")renderProd();
   else if(TAB==="inspect")renderInspect();
+  else if(TAB==="waste")renderWaste();
   else if(TAB==="recipe")renderRecipe();
   else if(TAB==="report")renderReport();
   else if(TAB==="data")renderData();
@@ -344,34 +359,68 @@ async function handleFiles(files){
 
 function prodOptions(){const s=[...Object.keys(ST.recipes||{})];CANON.forEach(p=>{if(!s.includes(p))s.push(p);});return s;}
 function usageText(product,kg){const u=recipeUsage(product,kg);const e=Object.entries(u);return e.length?e.map(([m,v])=>m+" "+(+v.toFixed(2))).join(", "):"";}
+// 생산기록 -> 원물 라인 (저장된 lines 우선, 없으면 배합비로 생성)
+function prodLines(r){
+  if(r.lines && r.lines.length) return r.lines;
+  const rc=(ST.recipes||{})[r.product]; const kg=num(r.prodKg);
+  if(!rc||!kg||!rc.batch) return [];
+  const f=kg/rc.batch;
+  return Object.entries(rc.ing).map(([m,v])=>({mat:m,kg:+(v*f).toFixed(2)}));
+}
 function renderProd(){
   const rows=(ST.production||[]).slice().sort((a,b)=>a.date<b.date?1:-1);
   app.innerHTML=`
   <div class="card">
-    <h2>생산일지 입력 <span class="pill">배합비 연동</span></h2>
-    <p class="muted">생산 제품·<b>생산량(kg)</b>·CCP를 기록합니다. 배합비가 등록된 제품은 생산량에 따라 원료 사용량이 자동 계산되어 원료수불부에 반영됩니다.</p>
+    <h2>생산일지 입력 <span class="pill">배합비 자동생성</span></h2>
+    <p class="muted">제품과 <b>생산량(kg)</b>을 넣으면 <b>원물명·중량이 배합비대로 자동 생성</b>됩니다. 실제와 다르면 아래 표에서 바로 고칠 수 있어요(수정값이 원료수불부·폐기물에 반영됩니다).</p>
     <div class="row">
       <label class="fld">일자<input type="date" id="p_date"></label>
-      <label class="fld">제품<select id="p_prod">${prodOptions().map(p=>`<option>${esc(p)}</option>`).join("")}<option>기타</option></select></label>
-      <label class="fld">생산량(kg)<input id="p_kg" type="number" step="any" style="width:90px"></label>
-      <label class="fld">수량/박스<input id="p_qty" type="number" step="any" style="width:80px"></label>
+      <label class="fld">품목<select id="p_prod">${prodOptions().map(p=>`<option>${esc(p)}</option>`).join("")}<option>기타</option></select></label>
+      <label class="fld">중량(kg)<input id="p_kg" type="number" step="any" style="width:90px"></label>
       <label class="fld">가열온도(℃)<input id="p_heat" type="number" step="any" style="width:90px"></label>
       <label class="fld">염도(%)<input id="p_salt" type="number" step="any" style="width:70px"></label>
       <label class="fld">금속검출<select id="p_metal"><option>적합</option><option>부적합</option><option>해당없음</option></select></label>
-      <label class="fld" style="flex:1;min-width:140px">비고<input id="p_note" style="width:100%"></label>
+      <label class="fld" style="flex:1;min-width:130px">비고<input id="p_note" style="width:100%"></label>
       <button class="btn" id="p_add">추가</button>
     </div>
     <div id="p_prev" class="muted" style="margin-top:8px"></div>
   </div>
+  ${rows.map(r=>{const ls=prodLines(r);const sum=ls.reduce((a,l)=>a+num(l.kg),0);return `
   <div class="card">
-    <h2>생산 기록 (${rows.length})</h2>
-    <table><thead><tr><th>일자</th><th>제품</th><th>생산kg</th><th>가열℃</th><th>염도%</th><th>금속</th><th class="l">원료 사용(배합비)</th><th></th></tr></thead>
-    <tbody>${rows.map(r=>{const u=usageText(r.product,r.prodKg);return `<tr><td>${r.date}</td><td>${esc(r.product)}</td><td>${r.prodKg||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l" style="font-size:11px">${u?esc(u):(NO_RECIPE_NOTE.includes(r.product)?'<span style="color:var(--sub)">배합비 추후</span>':'')}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`;}).join("")||`<tr><td colspan=8 class="muted">아직 없음</td></tr>`}</tbody></table>
-  </div>`;
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b>${r.date}</b> · <b>${esc(r.product)}</b>
+      <span class="muted">중량 <input type="number" step="any" class="pk" data-id="${r.id}" value="${r.prodKg||""}" style="width:75px"> kg</span>
+      <span class="muted">가열 ${r.heat||"-"}℃ · 염도 ${r.salt||"-"}% · 금속 ${r.metal||"-"}</span>
+      <span style="flex:1"></span>
+      <button class="btn outline regen" data-id="${r.id}" style="padding:5px 10px">배합비로 재생성</button>
+      <span class="del" data-del="${r.id}">✕</span>
+    </div>
+    ${esc(r.note||"")?`<div class="muted" style="margin-top:4px">비고: ${esc(r.note)}</div>`:""}
+    <table style="margin-top:8px"><thead><tr><th class="l">원물명</th><th>중량(kg)</th><th></th></tr></thead>
+    <tbody>${ls.map((l,i)=>`<tr>
+      <td class="l"><input class="lm" data-id="${r.id}" data-i="${i}" value="${esc(l.mat)}" style="width:150px"></td>
+      <td><input type="number" step="any" class="lk" data-id="${r.id}" data-i="${i}" value="${l.kg}" style="width:90px"></td>
+      <td><span class="del linedel" data-id="${r.id}" data-i="${i}">✕</span></td></tr>`).join("")||`<tr><td colspan=3 class="muted">배합비가 없는 품목입니다. 아래 [원물 추가]로 직접 입력하세요.</td></tr>`}
+      <tr style="background:#f0f2f5;font-weight:700"><td class="l">원물 합계</td><td>${+sum.toFixed(2)}</td><td></td></tr>
+    </tbody></table>
+    <button class="btn gray lineadd" data-id="${r.id}" style="margin-top:8px;padding:6px 12px">+ 원물 추가</button>
+  </div>`;}).join("")||`<div class="card"><p class="muted">생산 기록이 없습니다.</p></div>`}`;
   $("#p_date").value=new Date().toISOString().slice(0,10);
-  const prev=()=>{const u=usageText($("#p_prod").value,$("#p_kg").value);$("#p_prev").innerHTML=u?`→ 예상 원료 사용: <b>${esc(u)}</b> (kg)`:(NO_RECIPE_NOTE.includes($("#p_prod").value)?'이 제품은 배합비가 아직 없습니다(김치 4종 등, 추후 등록).':'');};
+  const prev=()=>{const u=usageText($("#p_prod").value,$("#p_kg").value);$("#p_prev").innerHTML=u?`→ 자동 생성될 원물: <b>${esc(u)}</b> (kg)`:'이 품목은 배합비가 없어 원물을 직접 입력하게 됩니다.';};
   $("#p_prod").onchange=prev; $("#p_kg").oninput=prev; prev();
-  $("#p_add").onclick=()=>{const e={id:uid(),date:$("#p_date").value,product:$("#p_prod").value,prodKg:$("#p_kg").value,qty:$("#p_qty").value,heat:$("#p_heat").value,salt:$("#p_salt").value,metal:$("#p_metal").value,note:$("#p_note").value};if(!e.date){alert("일자를 입력하세요");return;}ST.production.push(e);save();renderProd();};
+  $("#p_add").onclick=()=>{
+    const e={id:uid(),date:$("#p_date").value,product:$("#p_prod").value,prodKg:$("#p_kg").value,
+      heat:$("#p_heat").value,salt:$("#p_salt").value,metal:$("#p_metal").value,note:$("#p_note").value};
+    if(!e.date){alert("일자를 입력하세요");return;}
+    e.lines=prodLines(e); ST.production.push(e); save(); renderProd();
+  };
+  const find=id=>ST.production.find(x=>x.id===id);
+  app.querySelectorAll(".pk").forEach(i=>i.onchange=()=>{const r=find(i.dataset.id);r.prodKg=i.value;save();renderProd();});
+  app.querySelectorAll(".regen").forEach(b=>b.onclick=()=>{const r=find(b.dataset.id);r.lines=null;r.lines=prodLines(r);save();renderProd();});
+  app.querySelectorAll(".lm").forEach(i=>i.onchange=()=>{const r=find(i.dataset.id);r.lines=prodLines(r);r.lines[+i.dataset.i].mat=i.value;save();});
+  app.querySelectorAll(".lk").forEach(i=>i.onchange=()=>{const r=find(i.dataset.id);r.lines=prodLines(r);r.lines[+i.dataset.i].kg=num(i.value);save();renderProd();});
+  app.querySelectorAll(".linedel").forEach(x=>x.onclick=()=>{const r=find(x.dataset.id);r.lines=prodLines(r);r.lines.splice(+x.dataset.i,1);save();renderProd();});
+  app.querySelectorAll(".lineadd").forEach(b=>b.onclick=()=>{const r=find(b.dataset.id);r.lines=prodLines(r);r.lines.push({mat:"",kg:""});save();renderProd();});
   app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.production=ST.production.filter(r=>r.id!==x.dataset.del);save();renderProd();});
 }
 
@@ -474,6 +523,52 @@ function renderInspect(){
   app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.inspections=ST.inspections.filter(r=>r.id!==x.dataset.del);save();renderInspect();});
 }
 function rn(x){return +(Math.round(x*10000)/10000);}
+function renderWaste(){
+  if(!ST.wastes)ST.wastes=[];
+  const rows=(ST.wastes||[]).slice().sort((a,b)=>a.date<b.date?1:-1);
+  // 생산일 기준 전처리 손실 자동 산정(아직 대장에 없는 날짜만 제안)
+  const have=new Set(rows.filter(r=>r.auto).map(r=>r.date));
+  const sug={};
+  (ST.production||[]).forEach(p=>{const w=prodWaste(p);const s=Object.values(w).reduce((a,v)=>a+v,0);
+    if(s>0.001&&!have.has(p.date)){sug[p.date]=(sug[p.date]||0)+s;}});
+  const sugRows=Object.entries(sug).sort();
+  app.innerHTML=`
+  <div class="card">
+    <h2>폐기물 반출(배출) 관리대장 <span class="pill">전처리 손실 자동산정</span></h2>
+    <p class="muted">생산일지의 절임·건조 손실(배추 20%·무 10%·파프리카 92%)을 자동 계산해 <b>전처리 잔여물</b> 배출 초안을 제안합니다. 실제 배출량으로 수정해 저장하세요.</p>
+    ${sugRows.length?`<div class="warn"><b>자동 산정된 미등록 배출일 ${sugRows.length}건</b><br>
+      ${sugRows.map(([d,v])=>`· ${d} — 전처리 잔여물 <b>${(Math.round(v*100)/100)}kg</b>`).join("<br>")}
+      <div style="margin-top:8px"><button class="btn" id="w_addall">이 내용으로 대장에 추가</button></div></div>`:`<div class="ok">자동 산정 대기 중인 배출 건이 없습니다.</div>`}
+  </div>
+  <div class="card">
+    <h2>직접 입력</h2>
+    <div class="row">
+      <label class="fld">반출일<input type="date" id="w_date"></label>
+      <label class="fld">폐기물 종류<select id="w_kind"><option>음식물</option><option>일반</option></select></label>
+      <label class="fld">폐기물 구분<select id="w_type"><option>전처리폐기물(음식)</option><option>완제품폐기품(음식)</option><option>일반쓰레기</option></select></label>
+      <label class="fld">배출량(kg/L)<input id="w_amt" type="number" step="any" style="width:90px"></label>
+      <label class="fld">배출방법<select id="w_way"><option>수거통</option><option>봉투</option></select></label>
+      <label class="fld">작성자<input id="w_by" style="width:90px"></label>
+      <label class="fld">수거업체<input id="w_co" value="울주군청" style="width:100px"></label>
+      <label class="fld" style="flex:1;min-width:130px">기타(폐기사유)<input id="w_note" style="width:100%"></label>
+      <button class="btn" id="w_add">추가</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>반출 기록 (${rows.length})</h2>
+    <table><thead><tr><th>순</th><th>반출일</th><th>종류</th><th class="l">폐기물구분</th><th>배출량</th><th>배출방법</th><th>작성자</th><th>수거업체</th><th class="l">기타사항</th><th></th></tr></thead>
+    <tbody>${rows.map((r,i)=>`<tr><td>${rows.length-i}</td><td>${r.date}</td><td>${r.kind||""}</td><td class="l">${esc(r.wtype||"")}</td><td>${num(r.amount)||""}</td><td>${r.way||""}</td><td>${esc(r.by||"")}</td><td>${esc(r.company||"")}</td><td class="l">${esc(r.note||"")}${r.auto?' <span class="tag">자동</span>':''}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`).join("")||`<tr><td colspan=10 class="muted">아직 없음</td></tr>`}</tbody></table>
+  </div>`;
+  $("#w_date").value=new Date().toISOString().slice(0,10);
+  if(sugRows.length)$("#w_addall").onclick=()=>{
+    sugRows.forEach(([d,v])=>ST.wastes.push({id:uid(),date:d,kind:"음식물",wtype:"전처리폐기물(음식)",
+      amount:+(Math.round(v*100)/100),way:"수거통",by:"",company:"울주군청",note:"원재료 전처리 잔여물",auto:true}));
+    save();renderWaste();};
+  $("#w_add").onclick=()=>{const e={id:uid(),date:$("#w_date").value,kind:$("#w_kind").value,wtype:$("#w_type").value,
+    amount:$("#w_amt").value,way:$("#w_way").value,by:$("#w_by").value,company:$("#w_co").value,note:$("#w_note").value};
+    if(!e.date){alert("반출일을 입력하세요");return;}ST.wastes.push(e);save();renderWaste();};
+  app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.wastes=ST.wastes.filter(r=>r.id!==x.dataset.del);save();renderWaste();});
+}
 function renderRecipe(){
   const rc=ST.recipes||{};
   app.innerHTML=`
@@ -546,44 +641,63 @@ function buildReport(){
   const today=new Date().toISOString().slice(0,10);
   const tbl=(head,body)=>`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
   const f1=x=>(Math.round(x*100)/100);
+  const wst=((ST.wastes||[]).filter(x=>inM(x.date))).sort((a,b)=>a.date<b.date?-1:1);
+  // 일별 정합성 점검: 생산일에 폐기 대장이 있는지 / 사용 원료가 입고(육안검사)에 있는지
+  const prodDays=[...new Set(prod.map(p=>p.date))].sort();
+  const wasteDays=new Set(wst.map(w=>w.date));
+  const needWaste=prodDays.filter(d=>{const s=Object.values(wasteByMaterial(x=>x===d)).reduce((a,v)=>a+v,0);return s>0.001&&!wasteDays.has(d);});
+  const negMats=matRows.filter(r=>r.close<-0.001).map(r=>r.mat);
   $("#reportArea").innerHTML=`
   <div class="card">
     <div style="text-align:center;margin-bottom:6px"><div style="font-size:19px;font-weight:800">바비야기 HACCP 월간 보고서</div>
-    <div class="muted">대상 기간: ${m} &nbsp;·&nbsp; 작성일: ${today} &nbsp;·&nbsp; 작성자/승인자: __________</div></div>
+    <div class="muted">대상 기간: ${m} &nbsp;·&nbsp; 작성일: ${today}</div>
+    <div class="muted" style="margin-top:4px">작성자: ____________ &nbsp;&nbsp; 승인자: ____________</div></div>
   </div>
-  <div class="card"><h2>1. 월간 집계 요약</h2>
-    ${tbl(`<tr><th>주문 건수</th><th>판매 라인</th><th>총 판매수량</th><th>생산 기록</th><th>입고(육안검사)</th><th>원료 품목수</th></tr>`,
-      `<tr><td>${orderCnt}</td><td>${sales.length}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td><td>${prod.length}</td><td>${insp.length}</td><td>${matRows.length}</td></tr>`)}
+  <div class="card noprint"><h2>정합성 점검 <span class="pill">일별 대조</span></h2>
+    ${(needWaste.length||negMats.length)?`<div class="warn">
+      ${needWaste.length?`· <b>폐기물 대장 누락일 ${needWaste.length}일</b>: ${needWaste.join(", ")} → ④폐기물 반출 탭에서 추가하세요.<br>`:""}
+      ${negMats.length?`· <b>입고 기록이 부족한 원료</b>: ${negMats.join(", ")} → ③육안검사·입고 탭에서 입고를 기록하세요(기말재고 음수).`:""}
+    </div>`:`<div class="ok">생산일·폐기물·입고 기록이 서로 맞습니다. 👍</div>`}
   </div>
-  <div class="card"><h2>2. 제품별 판매현황</h2>
+
+  <div class="card"><h2>1. 생산일지</h2>
+    ${prod.length?tbl(`<tr><th>날짜</th><th class="l">품목</th><th>중량(kg)</th><th class="l">원물명</th><th>중량(kg)</th><th>가열℃</th><th>염도%</th><th>금속</th></tr>`,
+      prod.map(r=>{const ls=prodLines(r);
+        if(!ls.length)return `<tr><td>${r.date}</td><td class="l">${esc(r.product)}</td><td>${r.prodKg||""}</td><td class="l" colspan=2>-</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td></tr>`;
+        return ls.map((l,i)=>`<tr><td>${r.date}</td><td class="l">${esc(r.product)}</td><td style="color:#b03030;font-weight:${i===0?700:400}">${i===0?(r.prodKg||""):"-"}</td><td class="l">${esc(l.mat)}</td><td>${l.kg}</td><td>${i===0?(r.heat||""):""}</td><td>${i===0?(r.salt||""):""}</td><td>${i===0?(r.metal||""):""}</td></tr>`).join("");
+      }).join("")):`<p class="muted">해당 월 생산 기록이 없습니다. ②생산일지 탭에서 입력하세요.</p>`}
+  </div>
+
+  <div class="card"><h2>2. 폐기물 반출(배출) 관리대장</h2>
+    ${wst.length?tbl(`<tr><th>순</th><th>반출일</th><th>폐기물 종류</th><th class="l">폐기물구분</th><th>배출량(kg/L)</th><th>배출방법</th><th>작성자</th><th>수거업체</th><th class="l">기타사항</th></tr>`,
+      wst.map((r,i)=>`<tr><td>${i+1}</td><td>${r.date}</td><td>${r.kind||""}</td><td class="l">${esc(r.wtype||"")}</td><td>${num(r.amount)||""}</td><td>${r.way||""}</td><td>${esc(r.by||"")}</td><td>${esc(r.company||"")}</td><td class="l">${esc(r.note||"")}</td></tr>`).join("")+
+      `<tr style="background:#f0f2f5;font-weight:700"><td colspan=4 class="l">합계</td><td>${f1(wst.reduce((a,r)=>a+num(r.amount),0))}</td><td colspan=4></td></tr>`):`<p class="muted">해당 월 폐기물 반출 기록이 없습니다. ④폐기물 반출 탭에서 입력하세요.</p>`}
+  </div>
+
+  <div class="card"><h2>3. 육안검사일지 (원료 입고 검사)</h2>
+    ${insp.length?tbl(`<tr><th>일자</th><th class="l">품명</th><th>중량</th><th class="l">입고처</th><th>성적서<br>구비여부</th><th>소비기한</th><th>차량상태</th><th>성상</th><th>이물혼입</th><th>표시기준</th><th>적합여부</th><th class="l">부적합시<br>조치내용</th></tr>`,
+      insp.map(r=>`<tr><td>${r.date}</td><td class="l">${esc(r.item)}</td><td>${num(r.weight)||""}</td><td class="l">${esc(r.source||"")}</td><td>${r.cert||""}</td><td>${esc(r.expiry||"")}</td><td>${r.carState||""}</td><td>${r.appearance||""}</td><td>${r.foreign||""}</td><td>${r.labeling||""}</td><td style="${r.result==="부적합"?"color:var(--warn);font-weight:700":""}">${r.result||""}</td><td class="l">${esc(r.action||"")}</td></tr>`).join("")):`<p class="muted">해당 월 육안검사(입고) 기록이 없습니다. ③탭에서 입력하세요.</p>`}
+  </div>
+
+  <div class="card"><h2>4. 원료수불부</h2>
+    ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>사용</th><th>기말재고</th></tr>`,
+      matRows.map(r=>`<tr><td class="l">${esc(r.mat)}</td><td>${f1(r.open)}</td><td>${f1(r.ins)}</td><td>${f1(r.use)}</td><td style="${r.close<-0.001?"color:var(--warn);font-weight:700":"font-weight:700"}">${f1(r.close)}</td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다.</p>`}
+    <p class="muted" style="margin-top:8px">단위: kg · <b>입고</b>=육안검사일지 기록 · <b>사용</b>=생산일지 원물 사용량(절임·건조 손실 환산 포함)</p>
+  </div>
+
+  <div class="card"><h2>[참고] 제품별 판매현황 · 전처리 손실</h2>
     ${tbl(`<tr><th class="l">제품</th><th>소매</th><th>도매</th><th>합계</th></tr>`,
       CANON.map(p=>`<tr><td class="l">${p}</td><td>${sumP[p].소매||""}</td><td>${sumP[p].도매||""}</td><td><b>${(sumP[p].소매+sumP[p].도매)||""}</b></td></tr>`).join("")+
       `<tr style="background:#f0f2f5;font-weight:700"><td class="l">합계</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].도매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td></tr>`)}
-  </div>
-  <div class="card"><h2>3. 생산일지</h2>
-    ${prod.length?tbl(`<tr><th>일자</th><th>제품</th><th>생산kg</th><th>가열℃</th><th>염도%</th><th>금속</th><th class="l">원료 사용(배합비)</th></tr>`,
-      prod.map(r=>{const u=usageText(r.product,r.prodKg);return `<tr><td>${r.date}</td><td>${esc(r.product)}</td><td>${r.prodKg||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l" style="font-size:11px">${esc(u)}</td></tr>`;}).join("")):`<p class="muted">해당 월 생산 기록이 없습니다.</p>`}
-  </div>
-  <div class="card"><h2>4. 원료수불부 (입고·사용·재고)</h2>
-    ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>사용</th><th>기말재고</th></tr>`,
-      matRows.map(r=>`<tr><td class="l">${esc(r.mat)}</td><td>${f1(r.open)}</td><td>${f1(r.ins)}</td><td>${f1(r.use)}</td><td><b>${f1(r.close)}</b></td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다.</p>`}
-    <p class="muted" style="margin-top:8px">단위: kg · 입고=육안검사 기록, 사용=생산량×배합비 자동계산</p>
-  </div>
-  <div class="card"><h2>5. 육안검사일지 (원료 입고 검사)</h2>
-    ${insp.length?tbl(`<tr><th>일자</th><th class="l">품명</th><th>중량</th><th class="l">입고처</th><th>성적서</th><th>차량</th><th>성상</th><th>이물</th><th>적합</th><th class="l">조치</th></tr>`,
-      insp.map(r=>`<tr><td>${r.date}</td><td class="l">${esc(r.item)}</td><td>${num(r.weight)||""}</td><td class="l">${esc(r.source||"")}</td><td>${r.cert||""}</td><td>${r.carState||""}</td><td>${r.appearance||""}</td><td>${r.foreign||""}</td><td style="${r.result==="부적합"?"color:var(--warn);font-weight:700":""}">${r.result||""}</td><td class="l">${esc(r.action||"")}</td></tr>`).join("")):`<p class="muted">해당 월 육안검사(입고) 기록이 없습니다. ③탭에서 입력하세요.</p>`}
-  </div>
-  <div class="card"><h2>6. 폐기 물량 (전처리 손실)</h2>
-    ${wasteRows.length?tbl(`<tr><th class="l">원재료</th><th>폐기량(kg)</th><th class="l">비고</th></tr>`,
-      wasteRows.map(([mm,v])=>`<tr><td class="l">${esc(mm)}</td><td>${f1(v)}</td><td class="l">${mm==="배추"?"절임 20% 감소":mm==="무"?"절임 10% 감소":mm==="파프리카"?"건조 92% 감소":"전처리 손실"}</td></tr>`).join("")):`<p class="muted">해당 월 전처리 폐기 물량이 없습니다.</p>`}
-    <p class="muted" style="margin-top:8px">배추 절임(20%↓)·무 절임(10%↓)·파프리카 건조(92%↓) 시 원재료와 실사용의 차이를 폐기로 산정</p>
+    <p class="muted" style="margin-top:10px">주문 ${orderCnt}건 · 판매라인 ${sales.length}건</p>
+    ${wasteRows.length?`<p class="muted" style="margin-top:10px">전처리 손실(원재료별): ${wasteRows.map(([mm,v])=>mm+" "+f1(v)+"kg").join(" · ")}</p>`:""}
   </div>`;
 }
 function renderData(){
   app.innerHTML=`
   <div class="card"><h2>데이터 관리</h2>
     <p>모든 데이터는 이 브라우저에 저장됩니다. 정기적으로 <b>백업파일</b>을 받아두세요(PC 이전·복구용).</p>
-    <p class="muted">판매 ${ST.sales.length}건 · 생산 ${(ST.production||[]).length}건 · 원료수불 ${(ST.purchases||[]).length}건 · 옵션 ${Object.keys(ST.optionMap).length}종</p>
+    <p class="muted">판매 ${ST.sales.length}건 · 생산 ${(ST.production||[]).length}건 · 육안검사 ${(ST.inspections||[]).length}건 · 폐기물 ${(ST.wastes||[]).length}건 · 옵션 ${Object.keys(ST.optionMap).length}종</p>
     <div class="row" style="margin-top:8px">
       <button class="btn" id="d_exp">💾 백업파일 내려받기 (JSON)</button>
       <button class="btn outline" id="d_imp">📥 백업파일 불러오기</button>
@@ -600,8 +714,8 @@ function renderData(){
   </div>`;
   $("#d_exp").onclick=()=>{const blob=new Blob([JSON.stringify(ST,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="바비야기HACCP백업_"+new Date().toISOString().slice(0,10)+".json";a.click();};
   $("#d_imp").onclick=()=>$("#d_impf").click();
-  $("#d_impf").onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());ST=Object.assign({sales:[],production:[],purchases:[],inspections:[],optionMap:{},reviews:[],recipes:JSON.parse(JSON.stringify(RECIPES_DEFAULT))},j);save();$("#d_msg").innerHTML=`<div class="ok">불러오기 완료</div>`;setTimeout(renderData,800);}catch(e){$("#d_msg").innerHTML=`<div class="warn">파일을 읽을 수 없습니다</div>`;}};
-  $("#d_clr").onclick=()=>{if(confirm("정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다. (먼저 백업 권장)")){ST={sales:[],production:[],purchases:[],inspections:[],optionMap:{},reviews:[],recipes:JSON.parse(JSON.stringify(RECIPES_DEFAULT))};save();renderData();}};
+  $("#d_impf").onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());ST=Object.assign({sales:[],production:[],purchases:[],inspections:[],wastes:[],optionMap:{},reviews:[],recipes:JSON.parse(JSON.stringify(RECIPES_DEFAULT))},j);save();$("#d_msg").innerHTML=`<div class="ok">불러오기 완료</div>`;setTimeout(renderData,800);}catch(e){$("#d_msg").innerHTML=`<div class="warn">파일을 읽을 수 없습니다</div>`;}};
+  $("#d_clr").onclick=()=>{if(confirm("정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다. (먼저 백업 권장)")){ST={sales:[],production:[],purchases:[],inspections:[],wastes:[],optionMap:{},reviews:[],recipes:JSON.parse(JSON.stringify(RECIPES_DEFAULT))};save();renderData();}};
 }
 // 초기화
 load(); render();
