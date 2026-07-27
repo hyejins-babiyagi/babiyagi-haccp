@@ -63,12 +63,13 @@ td.l,th.l{text-align:left;}
 "use strict";
 const CANON=["채수팩","요리한끗","생강비책","순맛된장","순맛간장","순한배추김치","순한깍두기","순한백김치","순한빨간장","아기첫물","순한고기양념장","순한나박김치"];
 const KIM4=["순한배추김치","순한깍두기","순한백김치","순한나박김치"];
-const KW=[["채수팩","채수팩"],["요리한끗","요리한끗"],["생강비책","생강비책"],["고기양념장","순한고기양념장"],["빨간장","순한빨간장"],["순쌀된장","순맛된장"],["순맛된장","순맛된장"],["된장","순맛된장"],["저당맛간장","순맛간장"],["저염맛간장","순맛간장"],["순맛간장","순맛간장"],["맛간장","순맛간장"],["간장","순맛간장"],["배추김치","순한배추김치"],["깍두기","순한깍두기"],["백김치","순한백김치"],["나박김치","순한나박김치"],["아기첫물","아기첫물"],["첫물","아기첫물"]];
-const NONPROD=["아이스팩","비품","포장","보냉","택배비","배송비"];
+const KW=[["채수팩","채수팩"],["유기농채수","채수팩"],["유기농 채수","채수팩"],["순한채수","채수팩"],["아기채수","채수팩"],["바비야기채수","채수팩"],["채수","채수팩"],["요리한끗","요리한끗"],["생강비책","생강비책"],["고기양념장","순한고기양념장"],["빨간장","순한빨간장"],["순쌀된장","순맛된장"],["순맛된장","순맛된장"],["된장","순맛된장"],["저당맛간장","순맛간장"],["저염맛간장","순맛간장"],["순맛간장","순맛간장"],["맛간장","순맛간장"],["간장","순맛간장"],["배추김치","순한배추김치"],["깍두기","순한깍두기"],["백김치","순한백김치"],["나박김치","순한나박김치"],["아기첫물","아기첫물"],["첫물","아기첫물"]];
+const NONPROD=["아이스팩","비품","포장","보냉","택배비","배송비","소분용기","용기","보냉백","쇼핑백","스티커","봉투"];
 function kwFirst(s){for(const[k,p]of KW){if(s.includes(k))return p;}return null;}
 function resolveOpt(opt){
   const res={}; const add=(p,n)=>{res[p]=(res[p]||0)+n;};
   const tail = opt.includes(":")? opt.split(":").slice(1).join(":").trim() : opt;
+  if(/소분용기|용기|보냉백|보냉가방|쇼핑백|아이스팩|스티커|봉투|포장비닐/.test(opt)) return {products:{},note:"제외(비품)"};
   if(NONPROD.some(k=>opt.includes(k)) && !kwFirst(opt)) return {products:{},note:"제외(비품)"};
   if(/4\s*종\s*set/i.test(opt)||opt.includes("김치4종")||opt.includes("유아김치4종")){
     KIM4.forEach(p=>add(p,1));
@@ -76,7 +77,8 @@ function resolveOpt(opt){
     return {products:res,note:"확인필요:4종set"};
   }
   let mult=1,extra=0,m;
-  if(m=tail.match(/(\d+)\s*팩\s*세트/))mult=+m[1];
+  if(m=tail.match(/(\d+)\s*팩\s*(?:세트|셋트|set|SET|Set)?/))mult=+m[1];   // 3팩세트/3팩SET/3팩
+  if(m=tail.match(/(\d+)\s*(?:책|개|통|병)\s*(?:세트|셋트|set|SET|Set)/))mult=+m[1]; // 3책SET(오타) 등
   if(m=tail.match(/(\d+)\s*박스/))mult=+m[1];
   const re=/\+\s*(\d+)\s*팩/g; while(m=re.exec(tail))extra+=+m[1];
   if(mult>1||extra>0){const p=kwFirst(tail)||kwFirst(opt);if(p)add(p,mult+extra);return {products:res,note:(mult+extra>1?"확인필요:수량x"+(mult+extra):"")};}
@@ -260,7 +262,7 @@ async function processFiles(files,password){
       if(seen.has(it.spo)){dup++;continue;} seen.add(it.spo);
       let pr,note;
       if(ST.optionMap[it.opt]){pr=ST.optionMap[it.opt];note="";}
-      else{const r=resolveOpt(it.opt);pr=r.products;note=r.note;ST.optionMap[it.opt]=pr;if(note.startsWith("확인필요")||note==="제외(비품)"){newReviews.push({opt:it.opt,note,products:pr});}}
+      else{const r=resolveOpt(it.opt);pr=r.products;note=r.note;ST.optionMap[it.opt]=pr;if(note.startsWith("확인필요")){newReviews.push({opt:it.opt,note,products:pr});}}
       const products={}; for(const p in pr){products[p]=(products[p]||0)+pr[p]*it.qty;}
       ST.sales.push({spo:it.spo,ordno:it.ordno,date:it.date,channel:it.channel,type:buyerType(it.name),buyer:it.name,opt:it.opt,qty:it.qty,products,manual:!!it.manual});
       added++;
@@ -292,7 +294,7 @@ function applyMapping(opt,mp){ST.optionMap[opt]=mp;ST.sales.forEach(s=>{if(s.opt
 function confirmReview(opt,text){applyMapping(opt,parseMapping(text));ST.reviews=(ST.reviews||[]).filter(r=>r.opt!==opt);save();renderUpload();}
 function renderUpload(){
   const salesCnt=ST.sales.length;
-  const revs=(ST.reviews||[]).filter(r=>r.note&&(r.note.startsWith("확인필요")||r.note==="제외(비품)"));
+  const revs=(ST.reviews||[]).filter(r=>r.note&&r.note.startsWith("확인필요"));
   const revHTML=revs.map(r=>{const k=encodeURIComponent(r.opt);const cur=mappingToText(ST.optionMap[r.opt]||r.products);return `
      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;border-top:1px dashed var(--line);padding-top:8px">
        <span class="tag">${esc(r.note.replace("확인필요:",""))}</span>
