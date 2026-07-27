@@ -43,7 +43,9 @@ td.l,th.l{text-align:left;}
 .tag{font-size:11px;padding:1px 7px;border-radius:5px;background:#eef1f4;color:var(--sub);}
 .tag.domae{background:#fde8d0;color:#9a5b16;}
 .del{color:var(--warn);cursor:pointer;font-weight:700;}
-@media print{nav,header .sub,.noprint{display:none!important;}body{background:#fff;}.card{border:none;padding:0;}.wrap{margin:0;max-width:none;}}
+@media print{nav,header .sub,.noprint{display:none!important;}body{background:#fff;}.card{border:none;padding:0;}.wrap{margin:0;max-width:none;}
+  .pagebreak{page-break-before:always;break-before:page;}
+  table{page-break-inside:auto;} tr{page-break-inside:avoid;} thead{display:table-header-group;}}
 </style>
 </head>
 <body>
@@ -625,6 +627,8 @@ function monthsAvailable(){
   return arr;
 }
 let RMONTH=null;
+const RTABS=[["prod","생산일지"],["waste","폐기물 반출"],["insp","육안검사일지"],["mat","원료수불부"],["all","전체(4종)"]];
+let RTAB="prod";
 function renderReport(){
   const months=monthsAvailable(); if(!RMONTH||!months.includes(RMONTH))RMONTH=months[0];
   app.innerHTML=`
@@ -632,13 +636,17 @@ function renderReport(){
     <h2>HACCP 보고서 생성</h2>
     <div class="row">
       <label class="fld">대상 월<select id="r_month">${months.map(m=>`<option ${m===RMONTH?"selected":""}>${m}</option>`).join("")}</select></label>
-      <button class="btn" id="r_print">🖨️ PDF로 인쇄·저장</button>
-      <span class="muted">인쇄 대화상자에서 "PDF로 저장"을 선택하세요.</span>
+      <button class="btn" id="r_print">🖨️ 이 보고서 인쇄·PDF 저장</button>
+      <span class="muted">인쇄 창에서 "PDF로 저장"을 선택하세요. 아래 탭을 골라 <b>따로따로</b> 저장할 수 있습니다.</span>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+      ${RTABS.map(([k,t])=>`<button class="btn ${RTAB===k?"":"outline"} rtab" data-k="${k}" style="padding:7px 14px">${t}</button>`).join("")}
     </div>
   </div>
   <div id="reportArea"></div>`;
   $("#r_month").onchange=e=>{RMONTH=e.target.value;buildReport();};
   $("#r_print").onclick=()=>window.print();
+  app.querySelectorAll(".rtab").forEach(b=>b.onclick=()=>{RTAB=b.dataset.k;renderReport();});
   buildReport();
 }
 function buildReport(){
@@ -666,51 +674,56 @@ function buildReport(){
   const wasteDays=new Set(wst.map(w=>w.date));
   const needWaste=prodDays.filter(d=>{const s=Object.values(wasteByMaterial(x=>x===d)).reduce((a,v)=>a+v,0);return s>0.001&&!wasteDays.has(d);});
   const negMats=matRows.filter(r=>r.close<-0.001).map(r=>r.mat);
-  $("#reportArea").innerHTML=`
+  const head=(title)=>`
   <div class="card">
-    <div style="text-align:center;margin-bottom:6px"><div style="font-size:19px;font-weight:800">바비야기 HACCP 월간 보고서</div>
-    <div class="muted">대상 기간: ${m} &nbsp;·&nbsp; 작성일: ${today}</div>
+    <div style="text-align:center;margin-bottom:6px"><div style="font-size:19px;font-weight:800">${title}</div>
+    <div class="muted">바비야기 &nbsp;·&nbsp; 대상 기간: ${m} &nbsp;·&nbsp; 작성일: ${today}</div>
     <div class="muted" style="margin-top:4px">작성자: ____________ &nbsp;&nbsp; 승인자: ____________</div></div>
-  </div>
+  </div>`;
+  const check=`
   <div class="card noprint"><h2>정합성 점검 <span class="pill">일별 대조</span></h2>
     ${(needWaste.length||negMats.length)?`<div class="warn">
       ${needWaste.length?`· <b>폐기물 대장 누락일 ${needWaste.length}일</b>: ${needWaste.join(", ")} → ④폐기물 반출 탭에서 추가하세요.<br>`:""}
       ${negMats.length?`· <b>입고 기록이 부족한 원료</b>: ${negMats.join(", ")} → ③육안검사·입고 탭에서 입고를 기록하세요(기말재고 음수).`:""}
     </div>`:`<div class="ok">생산일·폐기물·입고 기록이 서로 맞습니다. 👍</div>`}
-  </div>
-
-  <div class="card"><h2>1. 생산일지</h2>
+  </div>`;
+  const S={};
+  S.prod=`<div class="card"><h2>생산일지</h2>
     ${prod.length?tbl(`<tr><th>날짜</th><th class="l">품목</th><th>중량(kg)</th><th class="l">원물명</th><th>중량(kg)</th><th>가열℃</th><th>염도%</th><th>금속</th></tr>`,
       prod.map(r=>{const ls=prodLines(r);
         if(!ls.length)return `<tr><td>${r.date}</td><td class="l">${esc(r.product)}</td><td>${r.prodKg||""}</td><td class="l" colspan=2>-</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td></tr>`;
         return ls.map((l,i)=>`<tr><td>${r.date}</td><td class="l">${esc(r.product)}</td><td style="color:#b03030;font-weight:${i===0?700:400}">${i===0?(r.prodKg||""):"-"}</td><td class="l">${esc(l.mat)}</td><td>${l.kg}</td><td>${i===0?(r.heat||""):""}</td><td>${i===0?(r.salt||""):""}</td><td>${i===0?(r.metal||""):""}</td></tr>`).join("");
       }).join("")):`<p class="muted">해당 월 생산 기록이 없습니다. ②생산일지 탭에서 입력하세요.</p>`}
-  </div>
-
-  <div class="card"><h2>2. 폐기물 반출(배출) 관리대장</h2>
+  </div>`;
+  S.waste=`<div class="card"><h2>폐기물 반출(배출) 관리대장</h2>
     ${wst.length?tbl(`<tr><th>순</th><th>반출일</th><th>폐기물 종류</th><th class="l">폐기물구분</th><th>배출량(kg/L)</th><th>배출방법</th><th>작성자</th><th>수거업체</th><th class="l">기타사항</th></tr>`,
       wst.map((r,i)=>`<tr><td>${i+1}</td><td>${r.date}</td><td>${r.kind||""}</td><td class="l">${esc(r.wtype||"")}</td><td>${num(r.amount)||""}</td><td>${r.way||""}</td><td>${esc(r.by||"")}</td><td>${esc(r.company||"")}</td><td class="l">${esc(r.note||"")}</td></tr>`).join("")+
       `<tr style="background:#f0f2f5;font-weight:700"><td colspan=4 class="l">합계</td><td>${f1(wst.reduce((a,r)=>a+num(r.amount),0))}</td><td colspan=4></td></tr>`):`<p class="muted">해당 월 폐기물 반출 기록이 없습니다. ④폐기물 반출 탭에서 입력하세요.</p>`}
-  </div>
-
-  <div class="card"><h2>3. 육안검사일지 (원료 입고 검사)</h2>
+  </div>`;
+  S.insp=`<div class="card"><h2>육안검사일지 (원료 입고 검사)</h2>
     ${insp.length?tbl(`<tr><th>일자</th><th class="l">품명</th><th>중량</th><th class="l">입고처</th><th>성적서<br>구비여부</th><th>소비기한</th><th>차량상태</th><th>성상</th><th>이물혼입</th><th>표시기준</th><th>적합여부</th><th class="l">부적합시<br>조치내용</th></tr>`,
       insp.map(r=>`<tr><td>${r.date}</td><td class="l">${esc(r.item)}</td><td>${num(r.weight)||""}</td><td class="l">${esc(r.source||"")}</td><td>${r.cert||""}</td><td>${esc(r.expiry||"")}</td><td>${r.carState||""}</td><td>${r.appearance||""}</td><td>${r.foreign||""}</td><td>${r.labeling||""}</td><td style="${r.result==="부적합"?"color:var(--warn);font-weight:700":""}">${r.result||""}</td><td class="l">${esc(r.action||"")}</td></tr>`).join("")):`<p class="muted">해당 월 육안검사(입고) 기록이 없습니다. ③탭에서 입력하세요.</p>`}
-  </div>
-
-  <div class="card"><h2>4. 원료수불부</h2>
+  </div>`;
+  S.mat=`<div class="card"><h2>원료수불부</h2>
     ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>자체생산</th><th>사용</th><th>기말재고</th></tr>`,
       matRows.map(r=>`<tr><td class="l">${esc(r.mat)}</td><td>${f1(r.open)}</td><td>${f1(r.ins)}</td><td>${r.made?f1(r.made):""}</td><td>${f1(r.use)}</td><td style="${r.close<-0.001?"color:var(--warn);font-weight:700":"font-weight:700"}">${f1(r.close)}</td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다.</p>`}
     <p class="muted" style="margin-top:8px">단위: kg · <b>입고</b>=육안검사일지 기록 · <b>자체생산</b>=중간재료(김치베이스 등) 생산량 · <b>사용</b>=생산일지 원물 사용량(절임·건조 손실 환산 포함)</p>
   </div>
-
-  <div class="card"><h2>[참고] 제품별 판매현황 · 전처리 손실</h2>
+  <div class="card noprint"><h2>[참고] 제품별 판매현황</h2>
     ${tbl(`<tr><th class="l">제품</th><th>소매</th><th>도매</th><th>합계</th></tr>`,
       CANON.map(p=>`<tr><td class="l">${p}</td><td>${sumP[p].소매||""}</td><td>${sumP[p].도매||""}</td><td><b>${(sumP[p].소매+sumP[p].도매)||""}</b></td></tr>`).join("")+
       `<tr style="background:#f0f2f5;font-weight:700"><td class="l">합계</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].도매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td></tr>`)}
-    <p class="muted" style="margin-top:10px">주문 ${orderCnt}건 · 판매라인 ${sales.length}건</p>
-    ${wasteRows.length?`<p class="muted" style="margin-top:10px">전처리 손실(원재료별): ${wasteRows.map(([mm,v])=>mm+" "+f1(v)+"kg").join(" · ")}</p>`:""}
+    <p class="muted" style="margin-top:10px">주문 ${orderCnt}건 · 판매라인 ${sales.length}건${wasteRows.length?" · 전처리 손실: "+wasteRows.map(([mm,v])=>mm+" "+f1(v)+"kg").join(" · "):""}</p>
   </div>`;
+  const TITLE={prod:"생산일지",waste:"폐기물 반출(배출) 관리대장",insp:"육안검사일지",mat:"원료수불부"};
+  let html;
+  if(RTAB==="all"){
+    html=head("HACCP 월간 보고서 (4종)")+check+
+      ["prod","waste","insp","mat"].map((k,i)=>`<div class="${i>0?"pagebreak":""}">${S[k]}</div>`).join("");
+  }else{
+    html=head(TITLE[RTAB])+check+S[RTAB];
+  }
+  $("#reportArea").innerHTML=html;
 }
 function renderData(){
   app.innerHTML=`
