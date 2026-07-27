@@ -53,9 +53,10 @@ td.l,th.l{text-align:left;}
 <nav id="nav">
   <button data-tab="upload" class="active">① 판매 업로드</button>
   <button data-tab="prod">② 생산일지</button>
-  <button data-tab="mat">③ 매입·원료수불</button>
-  <button data-tab="report">④ 보고서(PDF)</button>
-  <button data-tab="data">⑤ 데이터 관리</button>
+  <button data-tab="inspect">③ 육안검사·입고</button>
+  <button data-tab="recipe">④ 배합비</button>
+  <button data-tab="report">⑤ 보고서(PDF)</button>
+  <button data-tab="data">⑥ 데이터 관리</button>
 </nav>
 <div class="wrap" id="app"></div>
 <script>
@@ -83,13 +84,79 @@ function resolveOpt(opt){
   const p=kwFirst(tail)||kwFirst(opt); if(p)return {products:{[p]:1},note:""};
   return {products:{},note:"확인필요:매칭불가"};
 }
+// ---------- 배합비(제품별 제조 함량표, 기준생산량 kg 기준) ----------
+const RECIPE_VER=3; // 함량표 수정 시 +1 (기존 사용자 앱도 기본값 갱신)
+const RECIPES_DEFAULT={
+ "순맛간장":{batch:34,ing:{"간장":20,"무":2,"대파":2,"양파":2,"사과":4,"배추":3,"건표고":0.1,"감초":0.1,"생강":0.16,"다진마늘":0.6}},
+ "순한김치베이스":{batch:22,ing:{"쌀풀":10,"매실액":0.8,"멸치액젓":0.6,"다진마늘":0.5,"양파":4,"사과":6}},
+ "순맛된장":{batch:27,ing:{"백태":10,"미네랄소금":3,"채수":6,"콩삶은물":2,"쌀누룩가루":4,"메주가루":2}},
+ "순한빨간장":{batch:15,ing:{"매실":3,"소금":0.7,"채수":5,"쌀누룩":0.4,"메주가루":0.85,"안매운":0.8,"파프리카":1.7,"조청":2}},
+ "생강비책":{batch:15,ing:{"생강즙":8,"유기원당":4,"유기조청":3}},
+ "순한고기양념장":{batch:17.5,ing:{"양념장베이스":6,"도라지":0.5,"배":5,"채수":6}},
+ "순한배추김치":{batch:9.7,ing:{"절인배추":5,"파프리카가루":0.2,"김치베이스":2,"채수":2.5}},
+ "순한깍두기":{batch:9.7,ing:{"절인무":5,"파프리카가루":0.2,"김치베이스":2,"채수":2.5}},
+ "순한백김치":{batch:14,ing:{"절인배추":3,"절인무":2,"김치베이스":3,"채수":6}},
+ "순한나박김치":{batch:19,ing:{"절인배추":3,"절인무":2,"오이":1,"당근":1,"김치베이스":4,"채수":8}}
+};
+// 전처리 수율: 가공재료 -> 원재료 환산(수율) & 폐기. (배추 절임 20%감소, 무 절임 10%, 파프리카 건조 92%)
+const PROCESS_YIELD={"절인배추":{raw:"배추",yield:0.8},"절인무":{raw:"무",yield:0.9},"파프리카가루":{raw:"파프리카",yield:0.08}};
+const NO_RECIPE_NOTE=["채수팩","요리한끗","아기첫물"];
 // ---------- 상태 ----------
 const KEY="babiyagi_haccp_v1";
-let ST={sales:[],production:[],purchases:[],optionMap:{},reviews:[]};
-function load(){try{const j=localStorage.getItem(KEY);if(j)ST=Object.assign(ST,JSON.parse(j));}catch(e){}}
+let ST={sales:[],production:[],purchases:[],inspections:[],optionMap:{},reviews:[],recipes:null};
+function load(){try{const j=localStorage.getItem(KEY);if(j)ST=Object.assign(ST,JSON.parse(j));}catch(e){}
+  if(!ST.inspections)ST.inspections=[];
+  if(!ST.recipes || ST.recipeVer!==RECIPE_VER){ST.recipes=JSON.parse(JSON.stringify(RECIPES_DEFAULT));ST.recipeVer=RECIPE_VER;save();}
+}
+// 1회 생산(product, kg)의 원재료 사용량 (전처리 수율로 원재료 환산)
+function recipeUsage(product,kg){
+  const rc=(ST.recipes||{})[product]; const use={}; kg=num(kg);
+  if(!rc||!kg||!rc.batch)return use;
+  const f=kg/rc.batch;
+  for(const ing in rc.ing){ const amt=rc.ing[ing]*f; const pc=PROCESS_YIELD[ing];
+    if(pc){ use[pc.raw]=(use[pc.raw]||0)+amt/pc.yield; } else { use[ing]=(use[ing]||0)+amt; } }
+  return use;
+}
+// 1회 생산의 폐기량(전처리 손실) — 원재료별
+function recipeWaste(product,kg){
+  const rc=(ST.recipes||{})[product]; const w={}; kg=num(kg);
+  if(!rc||!kg||!rc.batch)return w;
+  const f=kg/rc.batch;
+  for(const ing in rc.ing){ const pc=PROCESS_YIELD[ing]; if(pc){ const amt=rc.ing[ing]*f; w[pc.raw]=(w[pc.raw]||0)+(amt/pc.yield-amt); } }
+  return w;
+}
+function usageByMaterial(filterFn){
+  const use={};
+  (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=recipeUsage(p.product,p.prodKg); for(const m in u)use[m]=(use[m]||0)+u[m]; });
+  (ST.purchases||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; if(num(p.useKg))use[p.material]=(use[p.material]||0)+num(p.useKg); });
+  return use;
+}
+function wasteByMaterial(filterFn){
+  const w={};
+  (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=recipeWaste(p.product,p.prodKg); for(const m in u)w[m]=(w[m]||0)+u[m]; });
+  return w;
+}
+// 원료별 입고량 (육안검사 중량 + 레거시 매입 inKg)
+function inByMaterial(filterFn){
+  const inn={};
+  (ST.inspections||[]).forEach(x=>{ if(filterFn&&!filterFn(x.date))return; if(num(x.weight))inn[x.item]=(inn[x.item]||0)+num(x.weight); });
+  (ST.purchases||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; if(num(p.inKg))inn[p.material]=(inn[p.material]||0)+num(p.inKg); });
+  return inn;
+}
 function save(){localStorage.setItem(KEY,JSON.stringify(ST));}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
-function fmtDate(d){if(!d)return"";if(d instanceof Date)return d.toISOString().slice(0,10);const s=String(d);const m=s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);if(m)return m[1]+"-"+String(m[2]).padStart(2,"0")+"-"+String(m[3]).padStart(2,"0");return s.slice(0,10);}
+function fmtDate(d){
+  if(d===null||d===undefined||d==="")return"";
+  if(d && typeof d==="object" && typeof d.getTime==="function" && !isNaN(d.getTime()))
+    return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  if(typeof d==="number"||/^\d+(\.\d+)?$/.test(String(d))){ // 엑셀 날짜 시리얼
+    const n=parseFloat(d);
+    if(n>20000&&n<80000){const dt=new Date(Math.round((n-25569)*86400*1000));return dt.toISOString().slice(0,10);}
+  }
+  const s=String(d);const m=s.match(/(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+  if(m)return m[1]+"-"+String(m[2]).padStart(2,"0")+"-"+String(m[3]).padStart(2,"0");
+  return s.slice(0,10);
+}
 // ---------- 복호화 (ECMA-376 agile) ----------
 function H(){const h=sha512.create();for(const b of arguments)h.update(b);return new Uint8Array(h.arrayBuffer());}
 function le32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n>>>0,true);return b;}
@@ -117,8 +184,34 @@ function decryptXlsx(buf,password){
   return out.slice(0,total);
 }
 // ---------- 파일 파싱 ----------
-function aoaFirstSheet(data){const wb=XLSX.read(data,{type:"array"});const ws=wb.Sheets[wb.SheetNames[0]];return XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});}
+function aoaFirstSheet(data){const wb=XLSX.read(data,{type:"array",cellDates:true});const ws=wb.Sheets[wb.SheetNames[0]];return XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});}
 function isJasamol(rows){const h=(rows[0]||[]).map(String);return h.includes("판매채널")&&h.includes("옵션명");}
+// 스마트스토어 '주문조회' 양식(헤더 있음) 판별
+function isOrderQuery(rows){const h=(rows[0]||[]).map(String);return h.includes("상품주문번호")&&h.includes("옵션정보");}
+function parseOrderQuery(rows,fkey){
+  const H=rows[0].map(v=>String(v==null?"":v).trim());
+  const gi=(n,d)=>{const i=H.indexOf(n);return i<0?d:i;};
+  const iSpo=gi("상품주문번호",0),iOrd=gi("주문번호",1),iDt=gi("주문일시",2),iSt=gi("주문상태",3);
+  const iOpt=gi("옵션정보",10),iOpt2=gi("판매옵션정보",11),iQty=gi("수량",12),iNm=gi("구매자명",13),iBid=gi("구매자ID",14);
+  const items=[];let cur=null,midx=0,mline=0;
+  for(let r=1;r<rows.length;r++){
+    const row=rows[r];if(!row)continue;
+    let opt=row[iOpt]; if(opt==null||opt==="")opt=row[iOpt2];
+    if(opt==null||opt==="")continue;
+    const st=String(row[iSt]||"");
+    if(st && /취소|반품|교환철회|미결제/.test(st))continue;   // 취소·반품 제외
+    const qty=(+row[iQty])||1, name=String(row[iNm]||""), ordno=row[iOrd], spo=row[iSpo];
+    if(ordno==null||ordno===""){   // 수기 추가분
+      if(cur!==name){midx++;cur=name;}
+      mline++;
+      items.push({spo:"99"+fkey+String(mline).padStart(4,"0"),ordno:"M"+fkey+"-"+String(midx).padStart(2,"0"),
+        date:fkey.slice(0,4)+"-"+fkey.slice(4,6)+"-"+fkey.slice(6,8),channel:"스마트스토어",opt:String(opt).trim(),qty,name,manual:true});
+    }else{
+      items.push({spo:String(spo),ordno:String(ordno),date:fmtDate(row[iDt]),channel:"스마트스토어",opt:String(opt).trim(),qty,name});
+    }
+  }
+  return items;
+}
 function parseJasamol(rows){
   const h=rows[0].map(String); const gi=(n,d)=>{const i=h.indexOf(n);return i<0?d:i;};
   const iO=gi("주문번호",1),iSeg=gi("주문섹션품목번호",15),iQ=gi("구매수량",16),iPn=gi("상품명",17),iOpt=gi("옵션명",18),iNm=gi("주문자 이름",8),iDt=gi("주문일",37);
@@ -137,7 +230,11 @@ function parseSmartstore(rows,fkey){
     else{items.push({spo:String(row[0]),ordno:String(ordno),date:fmtDate(dt),channel:"스마트스토어",opt:String(opt).trim(),qty,name});}}
   return items;
 }
-function dateKeyFromName(fn){const m=fn.match(/(\d{4})(\d{2})(\d{2})/);return m?m[1]+m[2]+m[3]:new Date().toISOString().slice(0,10).replace(/-/g,"");}
+function dateKeyFromName(fn){
+  let m=fn.match(/(20\d{2})[.\-_]?(\d{2})[.\-_]?(\d{2})/); if(m)return m[1]+m[2]+m[3];
+  m=fn.match(/(20\d{2})[.\-_](\d{1,2})(?!\d)/); if(m)return m[1]+String(m[2]).padStart(2,"0")+"01"; // 2026.01 → 20260101
+  return new Date().toISOString().slice(0,10).replace(/-/g,"");
+}
 </script>
 <script>
 const $=s=>document.querySelector(s); const app=$("#app");
@@ -158,7 +255,7 @@ async function processFiles(files,password){
       try{data=decryptXlsx(data,password);}catch(e){throw new Error("복호화 실패(비밀번호 확인): "+file.name);}
     }
     const rows=aoaFirstSheet(data); const fkey=dateKeyFromName(file.name);
-    const items=isJasamol(rows)?parseJasamol(rows):parseSmartstore(rows,fkey);
+    const items=isJasamol(rows)?parseJasamol(rows):(isOrderQuery(rows)?parseOrderQuery(rows,fkey):parseSmartstore(rows,fkey));
     for(const it of items){
       if(seen.has(it.spo)){dup++;continue;} seen.add(it.spo);
       let pr,note;
@@ -182,7 +279,8 @@ document.querySelectorAll("#nav button").forEach(b=>b.onclick=()=>setTab(b.datas
 function render(){
   if(TAB==="upload")renderUpload();
   else if(TAB==="prod")renderProd();
-  else if(TAB==="mat")renderMat();
+  else if(TAB==="inspect")renderInspect();
+  else if(TAB==="recipe")renderRecipe();
   else if(TAB==="report")renderReport();
   else if(TAB==="data")renderData();
 }
@@ -242,34 +340,40 @@ async function handleFiles(files){
   }catch(e){msg.innerHTML=`<div class="warn">${e.message}</div>`;}
 }
 
+function prodOptions(){const s=[...Object.keys(ST.recipes||{})];CANON.forEach(p=>{if(!s.includes(p))s.push(p);});return s;}
+function usageText(product,kg){const u=recipeUsage(product,kg);const e=Object.entries(u);return e.length?e.map(([m,v])=>m+" "+(+v.toFixed(2))).join(", "):"";}
 function renderProd(){
   const rows=(ST.production||[]).slice().sort((a,b)=>a.date<b.date?1:-1);
   app.innerHTML=`
   <div class="card">
-    <h2>생산일지 입력 <span class="pill">수기</span></h2>
-    <p class="muted">생산한 제품과 CCP(가열온도·염도 등)를 기록합니다. 손글씨 명부를 보고 직접 입력하세요.</p>
+    <h2>생산일지 입력 <span class="pill">배합비 연동</span></h2>
+    <p class="muted">생산 제품·<b>생산량(kg)</b>·CCP를 기록합니다. 배합비가 등록된 제품은 생산량에 따라 원료 사용량이 자동 계산되어 원료수불부에 반영됩니다.</p>
     <div class="row">
       <label class="fld">일자<input type="date" id="p_date"></label>
-      <label class="fld">제품<select id="p_prod">${CANON.map(p=>`<option>${p}</option>`).join("")}<option>기타</option></select></label>
-      <label class="fld">수량/박스<input id="p_qty" type="number" step="any" style="width:90px"></label>
+      <label class="fld">제품<select id="p_prod">${prodOptions().map(p=>`<option>${esc(p)}</option>`).join("")}<option>기타</option></select></label>
+      <label class="fld">생산량(kg)<input id="p_kg" type="number" step="any" style="width:90px"></label>
+      <label class="fld">수량/박스<input id="p_qty" type="number" step="any" style="width:80px"></label>
       <label class="fld">가열온도(℃)<input id="p_heat" type="number" step="any" style="width:90px"></label>
-      <label class="fld">염도(%)<input id="p_salt" type="number" step="any" style="width:80px"></label>
+      <label class="fld">염도(%)<input id="p_salt" type="number" step="any" style="width:70px"></label>
       <label class="fld">금속검출<select id="p_metal"><option>적합</option><option>부적합</option><option>해당없음</option></select></label>
-      <label class="fld" style="flex:1;min-width:160px">비고<input id="p_note" style="width:100%"></label>
+      <label class="fld" style="flex:1;min-width:140px">비고<input id="p_note" style="width:100%"></label>
       <button class="btn" id="p_add">추가</button>
     </div>
+    <div id="p_prev" class="muted" style="margin-top:8px"></div>
   </div>
   <div class="card">
     <h2>생산 기록 (${rows.length})</h2>
-    <table><thead><tr><th>일자</th><th>제품</th><th>수량</th><th>가열℃</th><th>염도%</th><th>금속검출</th><th class="l">비고</th><th></th></tr></thead>
-    <tbody>${rows.map(r=>`<tr><td>${r.date}</td><td>${r.product}</td><td>${r.qty||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l">${r.note||""}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`).join("")||`<tr><td colspan=8 class="muted">아직 없음</td></tr>`}</tbody></table>
+    <table><thead><tr><th>일자</th><th>제품</th><th>생산kg</th><th>가열℃</th><th>염도%</th><th>금속</th><th class="l">원료 사용(배합비)</th><th></th></tr></thead>
+    <tbody>${rows.map(r=>{const u=usageText(r.product,r.prodKg);return `<tr><td>${r.date}</td><td>${esc(r.product)}</td><td>${r.prodKg||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l" style="font-size:11px">${u?esc(u):(NO_RECIPE_NOTE.includes(r.product)?'<span style="color:var(--sub)">배합비 추후</span>':'')}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`;}).join("")||`<tr><td colspan=8 class="muted">아직 없음</td></tr>`}</tbody></table>
   </div>`;
   $("#p_date").value=new Date().toISOString().slice(0,10);
-  $("#p_add").onclick=()=>{const e={id:uid(),date:$("#p_date").value,product:$("#p_prod").value,qty:$("#p_qty").value,heat:$("#p_heat").value,salt:$("#p_salt").value,metal:$("#p_metal").value,note:$("#p_note").value};if(!e.date){alert("일자를 입력하세요");return;}ST.production.push(e);save();renderProd();};
+  const prev=()=>{const u=usageText($("#p_prod").value,$("#p_kg").value);$("#p_prev").innerHTML=u?`→ 예상 원료 사용: <b>${esc(u)}</b> (kg)`:(NO_RECIPE_NOTE.includes($("#p_prod").value)?'이 제품은 배합비가 아직 없습니다(김치 4종 등, 추후 등록).':'');};
+  $("#p_prod").onchange=prev; $("#p_kg").oninput=prev; prev();
+  $("#p_add").onclick=()=>{const e={id:uid(),date:$("#p_date").value,product:$("#p_prod").value,prodKg:$("#p_kg").value,qty:$("#p_qty").value,heat:$("#p_heat").value,salt:$("#p_salt").value,metal:$("#p_metal").value,note:$("#p_note").value};if(!e.date){alert("일자를 입력하세요");return;}ST.production.push(e);save();renderProd();};
   app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.production=ST.production.filter(r=>r.id!==x.dataset.del);save();renderProd();});
 }
 
-let matDraft=[], matOcrText="";
+let inspDraft=[], inspOcrText="";
 function parseReceipt(text){
   const rows=[]; let d="";
   const dm=text.match(/(20\d{2})[.\-\/ ]\s*(\d{1,2})[.\-\/ ]\s*(\d{1,2})/);
@@ -280,89 +384,118 @@ function parseReceipt(text){
     const nm=line.match(/(\d+(?:[.,]\d+)?)\s*(kg|킬로|g|개|박스|통|병)?/i);
     const namePart=line.replace(/[\d.,]+\s*(kg|킬로|g|개|박스|통|병)?/ig,"").replace(/[₩원:|()\[\]]/g,"").trim();
     if(nm && namePart.length>=1 && /[가-힣]/.test(namePart))
-      rows.push({date:d,material:namePart.slice(0,24),inKg:parseFloat(String(nm[1]).replace(",","."))||"",useKg:"",box:"",note:"OCR초안"});
+      rows.push({date:d,item:namePart.slice(0,24),weight:parseFloat(String(nm[1]).replace(",","."))||"",source:""});
   });
   return rows;
 }
-async function runOCR(files){
-  const msg=$("#m_ocrmsg");
+async function runInspectOCR(files){
+  const msg=$("#ins_ocrmsg");
   if(typeof Tesseract==="undefined"){msg.innerHTML=`<div class="warn">OCR 라이브러리를 불러오지 못했습니다(인터넷 연결 확인).</div>`;return;}
-  matDraft=[]; matOcrText="";
+  inspDraft=[]; inspOcrText="";
   for(const f of files){
     if(!f.type.startsWith("image/"))continue;
     msg.innerHTML=`<div class="muted">🔎 이미지 인식 중... 처음 실행은 언어데이터를 받느라 20~40초 걸릴 수 있어요.</div>`;
-    try{const res=await Tesseract.recognize(f,"kor+eng");const text=res.data.text;matOcrText+=(matOcrText?"\n----\n":"")+text;parseReceipt(text).forEach(r=>matDraft.push(r));}
+    try{const res=await Tesseract.recognize(f,"kor+eng");const text=res.data.text;inspOcrText+=(inspOcrText?"\n----\n":"")+text;parseReceipt(text).forEach(r=>inspDraft.push(r));}
     catch(e){msg.innerHTML=`<div class="warn">인식 실패: ${e.message}</div>`;return;}
   }
   msg.innerHTML=`<div class="ok">인식 완료 — 아래 초안을 <b>반드시 확인·수정</b>한 뒤 저장하세요.</div>`;
-  renderMat();
+  renderInspect();
 }
-function renderMat(){
-  const rows=(ST.purchases||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
-  const bal={}; const withBal=rows.map(r=>{bal[r.material]=(bal[r.material]||0)+num(r.inKg)-num(r.useKg);return Object.assign({},r,{balance:bal[r.material]});});
-  withBal.reverse();
-  const draftHTML=matDraft.length?`
+const CERT=["있음","없음"], YN2=["양호","불량"], APP=["정상","이상"], FOR=["없음","있음"], LAB=["적합","부적합","해당없음"], RES=["적합","부적합"];
+function selHTML(id,opts,val){return `<select id="${id}">${opts.map(o=>`<option ${o===val?"selected":""}>${o}</option>`).join("")}</select>`;}
+function renderInspect(){
+  const rows=(ST.inspections||[]).slice().sort((a,b)=>a.date<b.date?1:-1);
+  const mats=[...new Set([].concat((ST.inspections||[]).map(x=>x.item),(ST.purchases||[]).map(p=>p.material)))].filter(Boolean);
+  const draftHTML=inspDraft.length?`
   <div class="card">
-    <h2>OCR 초안 확인 <span class="pill" style="background:var(--warnbg);color:var(--warn)">${matDraft.length}행</span></h2>
-    <p class="muted">이미지에서 읽은 결과입니다. <b>글자 인식은 오류가 있을 수 있으니 반드시 확인</b>하고, 틀린 값은 고친 뒤 저장하세요. 불필요한 행은 ✕로 지우세요.</p>
-    <table><thead><tr><th>일자</th><th class="l">원료</th><th>입고kg</th><th>사용kg</th><th>박스</th><th class="l">비고</th><th></th></tr></thead><tbody>
-    ${matDraft.map((r,i)=>`<tr>
+    <h2>OCR 초안 확인 <span class="pill" style="background:var(--warnbg);color:var(--warn)">${inspDraft.length}행</span></h2>
+    <p class="muted">이미지에서 읽은 입고 초안입니다. <b>인식 오류가 있을 수 있으니 반드시 확인</b>하고 고친 뒤 저장하세요. 저장 시 성상/적합 등 검사항목은 기본값(정상·적합)으로 들어가며, 필요하면 각 행을 삭제 후 아래 폼으로 정밀 입력하세요.</p>
+    <table><thead><tr><th>일자</th><th class="l">품명</th><th>중량kg</th><th class="l">입고처</th><th></th></tr></thead><tbody>
+    ${inspDraft.map((r,i)=>`<tr>
       <td><input type="date" data-i="${i}" data-f="date" value="${r.date||""}" style="width:130px"></td>
-      <td class="l"><input data-i="${i}" data-f="material" value="${esc(r.material||"")}" style="width:140px"></td>
-      <td><input type="number" step="any" data-i="${i}" data-f="inKg" value="${r.inKg}" style="width:80px"></td>
-      <td><input type="number" step="any" data-i="${i}" data-f="useKg" value="${r.useKg}" style="width:80px"></td>
-      <td><input data-i="${i}" data-f="box" value="${esc(r.box||"")}" style="width:60px"></td>
-      <td class="l"><input data-i="${i}" data-f="note" value="${esc(r.note||"")}" style="width:120px"></td>
+      <td class="l"><input data-i="${i}" data-f="item" value="${esc(r.item||"")}" style="width:150px"></td>
+      <td><input type="number" step="any" data-i="${i}" data-f="weight" value="${r.weight}" style="width:80px"></td>
+      <td class="l"><input data-i="${i}" data-f="source" value="${esc(r.source||"")}" style="width:130px"></td>
       <td><span class="del" data-dd="${i}">✕</span></td></tr>`).join("")}
     </tbody></table>
-    <div class="row" style="margin-top:10px"><button class="btn" id="m_saveDraft">✔ 초안 모두 저장</button><button class="btn gray" id="m_cancelDraft">취소</button>
-      <button class="btn outline" id="m_showtext">인식 원문 보기</button></div>
-    <pre id="m_ocrtext" style="display:none;white-space:pre-wrap;background:#f7f8fa;border:1px solid var(--line);border-radius:7px;padding:10px;margin-top:8px;font-size:11.5px">${esc(matOcrText)}</pre>
+    <div class="row" style="margin-top:10px"><button class="btn" id="ins_saveDraft">✔ 초안 모두 저장(입고)</button><button class="btn gray" id="ins_cancelDraft">취소</button>
+      <button class="btn outline" id="ins_showtext">인식 원문 보기</button></div>
+    <pre id="ins_ocrtext" style="display:none;white-space:pre-wrap;background:#f7f8fa;border:1px solid var(--line);border-radius:7px;padding:10px;margin-top:8px;font-size:11.5px">${esc(inspOcrText)}</pre>
   </div>`:"";
   app.innerHTML=`
   <div class="card">
-    <h2>영수증·구매내역 이미지 올리기 <span class="pill">OCR 자동정리</span></h2>
-    <p class="muted">온라인 구매내역 캡쳐나 영수증 사진을 올리면, 앱이 글자를 읽어 원료 입고 초안을 만들어 줍니다. (초안은 반드시 확인 후 저장)</p>
-    <div class="drop" id="imgdrop">📷 여기로 이미지를 끌어다 놓거나, 클릭해서 선택<br><span class="muted">(사진/캡쳐 여러 장 가능 / jpg·png)</span></div>
+    <h2>육안검사·입고 <span class="pill">입고=검사 통합</span></h2>
+    <p class="muted">원료가 들어올 때 육안검사 결과를 기록합니다. 여기 입력한 <b>품명·중량이 곧 원료 입고</b>가 되어 원료수불부에 반영됩니다.</p>
+    <div class="drop" id="imgdrop" style="padding:16px">📷 영수증·구매내역 이미지로 빠른 입력(OCR) — 여기로 끌어다 놓거나 클릭</div>
     <input type="file" id="imgfile" accept="image/*" multiple hidden>
-    <div id="m_ocrmsg"></div>
+    <div id="ins_ocrmsg"></div>
   </div>
   ${draftHTML}
   <div class="card">
-    <h2>직접 입력 <span class="pill">수기</span></h2>
-    <p class="muted">원료 입고/사용을 직접 입력하면 잔량(재고)이 자동 계산됩니다.</p>
+    <h2>직접 입력 (정밀)</h2>
     <div class="row">
-      <label class="fld">일자<input type="date" id="m_date"></label>
-      <label class="fld">원료<input id="m_mat" list="matlist" style="width:120px"><datalist id="matlist">${[...new Set((ST.purchases||[]).map(p=>p.material))].map(m=>`<option>${esc(m)}</option>`).join("")}</datalist></label>
-      <label class="fld">입고(kg)<input id="m_in" type="number" step="any" style="width:90px"></label>
-      <label class="fld">사용(kg)<input id="m_use" type="number" step="any" style="width:90px"></label>
-      <label class="fld">박스<input id="m_box" style="width:70px"></label>
-      <label class="fld" style="flex:1;min-width:140px">비고<input id="m_note" style="width:100%"></label>
-      <button class="btn" id="m_add">추가</button>
+      <label class="fld">일자<input type="date" id="i_date"></label>
+      <label class="fld">품명<input id="i_item" list="matlist" style="width:110px"><datalist id="matlist">${mats.map(m=>`<option>${esc(m)}</option>`).join("")}</datalist></label>
+      <label class="fld">중량(kg)<input id="i_wt" type="number" step="any" style="width:80px"></label>
+      <label class="fld">입고처<input id="i_src" style="width:120px"></label>
+      <label class="fld">성적서${selHTML("i_cert",CERT)}</label>
+      <label class="fld">소비기한<input id="i_exp" style="width:110px"></label>
+      <label class="fld">차량상태${selHTML("i_car",YN2)}</label>
+      <label class="fld">성상${selHTML("i_app",APP)}</label>
+      <label class="fld">이물혼입${selHTML("i_for",FOR)}</label>
+      <label class="fld">표시기준${selHTML("i_lab",LAB)}</label>
+      <label class="fld">적합여부${selHTML("i_res",RES)}</label>
+      <label class="fld" style="flex:1;min-width:120px">조치내용<input id="i_act" style="width:100%"></label>
+      <button class="btn" id="i_add">추가</button>
     </div>
   </div>
   <div class="card">
-    <h2>원료 수불 기록 (${rows.length})</h2>
-    <table><thead><tr><th>일자</th><th class="l">원료</th><th>입고kg</th><th>사용kg</th><th>잔량kg</th><th>박스</th><th class="l">비고</th><th></th></tr></thead>
-    <tbody>${withBal.map(r=>`<tr><td>${r.date}</td><td class="l">${esc(r.material)}</td><td>${num(r.inKg)||""}</td><td>${num(r.useKg)||""}</td><td><b>${r.balance.toFixed(1)}</b></td><td>${esc(r.box||"")}</td><td class="l">${esc(r.note||"")}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`).join("")||`<tr><td colspan=8 class="muted">아직 없음</td></tr>`}</tbody></table>
+    <h2>육안검사·입고 기록 (${rows.length})</h2>
+    <table><thead><tr><th>일자</th><th class="l">품명</th><th>중량</th><th class="l">입고처</th><th>성적서</th><th>차량</th><th>성상</th><th>이물</th><th>적합</th><th class="l">조치</th><th></th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${r.date}</td><td class="l">${esc(r.item)}</td><td>${num(r.weight)||""}</td><td class="l">${esc(r.source||"")}</td><td>${r.cert||""}</td><td>${r.carState||""}</td><td>${r.appearance||""}</td><td>${r.foreign||""}</td><td style="${r.result==="부적합"?"color:var(--warn);font-weight:700":""}">${r.result||""}</td><td class="l">${esc(r.action||"")}</td><td><span class="del" data-del="${r.id}">✕</span></td></tr>`).join("")||`<tr><td colspan=11 class="muted">아직 없음</td></tr>`}</tbody></table>
   </div>`;
   const idrop=$("#imgdrop"),ifile=$("#imgfile");
   idrop.onclick=()=>ifile.click();
   idrop.ondragover=e=>{e.preventDefault();idrop.classList.add("hover");};
   idrop.ondragleave=()=>idrop.classList.remove("hover");
-  idrop.ondrop=e=>{e.preventDefault();idrop.classList.remove("hover");runOCR(e.dataTransfer.files);};
-  ifile.onchange=e=>runOCR(e.target.files);
-  if(matDraft.length){
-    app.querySelectorAll("#m_saveDraft")[0].onclick=()=>{matDraft.forEach(r=>{if(r.material)ST.purchases.push({id:uid(),date:r.date,material:r.material,inKg:r.inKg,useKg:r.useKg,box:r.box,note:r.note});});matDraft=[];matOcrText="";save();renderMat();};
-    $("#m_cancelDraft").onclick=()=>{matDraft=[];matOcrText="";renderMat();};
-    $("#m_showtext").onclick=()=>{const t=$("#m_ocrtext");t.style.display=t.style.display==="none"?"block":"none";};
-    app.querySelectorAll("#m_ocrtext").length;
-    app.querySelectorAll("[data-i]").forEach(inp=>inp.oninput=()=>{matDraft[+inp.dataset.i][inp.dataset.f]=inp.value;});
-    app.querySelectorAll("[data-dd]").forEach(x=>x.onclick=()=>{matDraft.splice(+x.dataset.dd,1);renderMat();});
+  idrop.ondrop=e=>{e.preventDefault();idrop.classList.remove("hover");runInspectOCR(e.dataTransfer.files);};
+  ifile.onchange=e=>runInspectOCR(e.target.files);
+  if(inspDraft.length){
+    $("#ins_saveDraft").onclick=()=>{inspDraft.forEach(r=>{if(r.item)ST.inspections.push({id:uid(),date:r.date,item:r.item,weight:r.weight,source:r.source,cert:"",expiry:"",carState:"양호",appearance:"정상",foreign:"없음",labeling:"해당없음",result:"적합",action:"",note:"OCR"});});inspDraft=[];inspOcrText="";save();renderInspect();};
+    $("#ins_cancelDraft").onclick=()=>{inspDraft=[];inspOcrText="";renderInspect();};
+    $("#ins_showtext").onclick=()=>{const t=$("#ins_ocrtext");t.style.display=t.style.display==="none"?"block":"none";};
+    app.querySelectorAll("[data-i]").forEach(inp=>inp.oninput=()=>{inspDraft[+inp.dataset.i][inp.dataset.f]=inp.value;});
+    app.querySelectorAll("[data-dd]").forEach(x=>x.onclick=()=>{inspDraft.splice(+x.dataset.dd,1);renderInspect();});
   }
-  $("#m_date").value=new Date().toISOString().slice(0,10);
-  $("#m_add").onclick=()=>{const e={id:uid(),date:$("#m_date").value,material:$("#m_mat").value.trim(),inKg:$("#m_in").value,useKg:$("#m_use").value,box:$("#m_box").value,note:$("#m_note").value};if(!e.date||!e.material){alert("일자·원료를 입력하세요");return;}ST.purchases.push(e);save();renderMat();};
-  app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.purchases=ST.purchases.filter(r=>r.id!==x.dataset.del);save();renderMat();});
+  $("#i_date").value=new Date().toISOString().slice(0,10);
+  $("#i_add").onclick=()=>{const e={id:uid(),date:$("#i_date").value,item:$("#i_item").value.trim(),weight:$("#i_wt").value,source:$("#i_src").value,cert:$("#i_cert").value,expiry:$("#i_exp").value,carState:$("#i_car").value,appearance:$("#i_app").value,foreign:$("#i_for").value,labeling:$("#i_lab").value,result:$("#i_res").value,action:$("#i_act").value};if(!e.date||!e.item){alert("일자·품명을 입력하세요");return;}ST.inspections.push(e);save();renderInspect();};
+  app.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{ST.inspections=ST.inspections.filter(r=>r.id!==x.dataset.del);save();renderInspect();});
+}
+function rn(x){return +(Math.round(x*10000)/10000);}
+function renderRecipe(){
+  const rc=ST.recipes||{};
+  app.innerHTML=`
+  <div class="card">
+    <h2>배합비 (제품별 제조 함량표) <span class="pill">기준생산량 kg 기준</span></h2>
+    <p class="muted"><b>기준생산량(kg)</b>을 바꾸면 배합량이 <b>비율에 따라 자동으로 변경</b>됩니다. 개별 배합량을 직접 고칠 수도 있어요(비율이 다시 계산됨). 김치 4종은 추후 등록.</p>
+    <button class="btn outline" id="rc_reset">함량표 원본값으로 초기화</button>
+  </div>
+  ${Object.entries(rc).map(([p,r])=>{
+    const tot=Object.values(r.ing).reduce((a,v)=>a+num(v),0);
+    return `
+  <div class="card">
+    <h2>${esc(p)} <span class="muted" style="font-weight:400">· 기준생산량 <input type="number" step="any" class="rc-batch" data-p="${esc(p)}" value="${r.batch}" style="width:75px"> kg</span></h2>
+    <table><thead><tr><th class="l">원재료</th><th>배합량(kg)</th><th>비율(%)</th></tr></thead>
+    <tbody>${Object.entries(r.ing).map(([m,v])=>`<tr><td class="l">${esc(m)}</td><td><input type="number" step="any" class="rc-ing" data-p="${esc(p)}" data-m="${esc(m)}" value="${v}" style="width:90px"></td><td>${r.batch?(num(v)/num(r.batch)*100).toFixed(1):"-"}</td></tr>`).join("")}
+    <tr style="background:#f0f2f5;font-weight:700"><td class="l">배합 합계</td><td>${rn(tot)}</td><td>${r.batch?(tot/num(r.batch)*100).toFixed(1):"-"}</td></tr></tbody></table>
+  </div>`;}).join("")}`;
+  $("#rc_reset").onclick=()=>{if(confirm("배합비를 함량표 원본값으로 되돌릴까요? 직접 수정한 값은 사라집니다.")){ST.recipes=JSON.parse(JSON.stringify(RECIPES_DEFAULT));ST.recipeVer=RECIPE_VER;save();renderRecipe();}};
+  app.querySelectorAll(".rc-batch").forEach(inp=>inp.onchange=()=>{
+    const p=inp.dataset.p, nb=num(inp.value), ob=num(ST.recipes[p].batch);
+    if(nb>0 && ob>0){const s=nb/ob; for(const m in ST.recipes[p].ing)ST.recipes[p].ing[m]=rn(num(ST.recipes[p].ing[m])*s);}
+    ST.recipes[p].batch=nb; save(); renderRecipe();
+  });
+  app.querySelectorAll(".rc-ing").forEach(inp=>inp.onchange=()=>{ST.recipes[inp.dataset.p].ing[inp.dataset.m]=num(inp.value);save();renderRecipe();});
 }
 </script>
 <script>
@@ -371,6 +504,7 @@ function monthsAvailable(){
   ST.sales.forEach(x=>x.date&&s.add(x.date.slice(0,7)));
   (ST.production||[]).forEach(x=>x.date&&s.add(x.date.slice(0,7)));
   (ST.purchases||[]).forEach(x=>x.date&&s.add(x.date.slice(0,7)));
+  (ST.inspections||[]).forEach(x=>x.date&&s.add(x.date.slice(0,7)));
   const arr=[...s].filter(Boolean).sort().reverse();
   if(!arr.length)arr.push(new Date().toISOString().slice(0,7));
   return arr;
@@ -393,45 +527,54 @@ function renderReport(){
   buildReport();
 }
 function buildReport(){
-  const m=RMONTH; const inM=d=>d&&d.slice(0,7)===m;
+  const m=RMONTH; const inM=d=>d&&d.slice(0,7)===m; const beforeM=d=>d&&String(d).slice(0,10)<m+"-01";
   const sales=ST.sales.filter(s=>inM(s.date));
   const prod=(ST.production||[]).filter(p=>inM(p.date)).sort((a,b)=>a.date<b.date?-1:1);
-  const pur=(ST.purchases||[]).filter(p=>inM(p.date)).sort((a,b)=>a.date<b.date?-1:1);
-  // 판매현황 요약: 제품별 소매/도매 수량
+  const insp=(ST.inspections||[]).filter(x=>inM(x.date)).sort((a,b)=>a.date<b.date?-1:1);
   const sumP={}; CANON.forEach(p=>sumP[p]={소매:0,도매:0});
   sales.forEach(s=>{for(const p in s.products){if(!sumP[p])sumP[p]={소매:0,도매:0};sumP[p][s.type]+=s.products[p];}});
   const orderCnt=new Set(sales.map(s=>s.ordno)).size;
-  // 원료수불: 기초재고(이전월말 누적) + 당월
-  const matSet=[...new Set((ST.purchases||[]).map(p=>p.material))];
-  const matRows=matSet.map(mat=>{
-    let open=0; (ST.purchases||[]).filter(p=>p.material===mat&&p.date<m+"-01").forEach(p=>{open+=num(p.inKg)-num(p.useKg);});
-    let inSum=0,useSum=0; pur.filter(p=>p.material===mat).forEach(p=>{inSum+=num(p.inKg);useSum+=num(p.useKg);});
-    return {mat,open,inSum,useSum,close:open+inSum-useSum};
-  }).filter(r=>r.open||r.inSum||r.useSum);
+  // 원료수불: 기초(전월말) + 당월 입고(육안검사) - 당월 사용(생산×배합비)
+  const inBefore=inByMaterial(beforeM), useBefore=usageByMaterial(beforeM);
+  const inNow=inByMaterial(inM), useNow=usageByMaterial(inM);
+  const mats=[...new Set([].concat(Object.keys(inBefore),Object.keys(useBefore),Object.keys(inNow),Object.keys(useNow)))].sort();
+  const matRows=mats.map(mat=>{const open=(inBefore[mat]||0)-(useBefore[mat]||0);const ins=inNow[mat]||0;const use=useNow[mat]||0;return {mat,open,ins,use,close:open+ins-use};}).filter(r=>r.open||r.ins||r.use);
+  // 폐기 물량(전처리 손실)
+  const waste=wasteByMaterial(inM); const wasteRows=Object.entries(waste).filter(([mm,v])=>v>0.001).sort();
   const today=new Date().toISOString().slice(0,10);
   const tbl=(head,body)=>`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  const f1=x=>(Math.round(x*100)/100);
   $("#reportArea").innerHTML=`
   <div class="card">
     <div style="text-align:center;margin-bottom:6px"><div style="font-size:19px;font-weight:800">바비야기 HACCP 월간 보고서</div>
     <div class="muted">대상 기간: ${m} &nbsp;·&nbsp; 작성일: ${today} &nbsp;·&nbsp; 작성자/승인자: __________</div></div>
   </div>
   <div class="card"><h2>1. 월간 집계 요약</h2>
-    ${tbl(`<tr><th>주문 건수</th><th>판매 라인</th><th>총 판매수량(개)</th><th>생산 기록</th><th>원료 품목수</th></tr>`,
-      `<tr><td>${orderCnt}</td><td>${sales.length}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td><td>${prod.length}</td><td>${matRows.length}</td></tr>`)}
+    ${tbl(`<tr><th>주문 건수</th><th>판매 라인</th><th>총 판매수량</th><th>생산 기록</th><th>입고(육안검사)</th><th>원료 품목수</th></tr>`,
+      `<tr><td>${orderCnt}</td><td>${sales.length}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td><td>${prod.length}</td><td>${insp.length}</td><td>${matRows.length}</td></tr>`)}
   </div>
-  <div class="card"><h2>2. 제품별 판매현황 (원료수불 기초자료)</h2>
+  <div class="card"><h2>2. 제품별 판매현황</h2>
     ${tbl(`<tr><th class="l">제품</th><th>소매</th><th>도매</th><th>합계</th></tr>`,
       CANON.map(p=>`<tr><td class="l">${p}</td><td>${sumP[p].소매||""}</td><td>${sumP[p].도매||""}</td><td><b>${(sumP[p].소매+sumP[p].도매)||""}</b></td></tr>`).join("")+
       `<tr style="background:#f0f2f5;font-weight:700"><td class="l">합계</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].도매,0)}</td><td>${CANON.reduce((a,p)=>a+sumP[p].소매+sumP[p].도매,0)}</td></tr>`)}
   </div>
   <div class="card"><h2>3. 생산일지</h2>
-    ${prod.length?tbl(`<tr><th>일자</th><th>제품</th><th>수량</th><th>가열℃</th><th>염도%</th><th>금속검출</th><th class="l">비고</th></tr>`,
-      prod.map(r=>`<tr><td>${r.date}</td><td>${r.product}</td><td>${r.qty||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l">${r.note||""}</td></tr>`).join("")):`<p class="muted">해당 월 생산 기록이 없습니다. ②생산일지 탭에서 입력하세요.</p>`}
+    ${prod.length?tbl(`<tr><th>일자</th><th>제품</th><th>생산kg</th><th>가열℃</th><th>염도%</th><th>금속</th><th class="l">원료 사용(배합비)</th></tr>`,
+      prod.map(r=>{const u=usageText(r.product,r.prodKg);return `<tr><td>${r.date}</td><td>${esc(r.product)}</td><td>${r.prodKg||""}</td><td>${r.heat||""}</td><td>${r.salt||""}</td><td>${r.metal||""}</td><td class="l" style="font-size:11px">${esc(u)}</td></tr>`;}).join("")):`<p class="muted">해당 월 생산 기록이 없습니다.</p>`}
   </div>
   <div class="card"><h2>4. 원료수불부 (입고·사용·재고)</h2>
     ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>사용</th><th>기말재고</th></tr>`,
-      matRows.map(r=>`<tr><td class="l">${r.mat}</td><td>${r.open.toFixed(1)}</td><td>${r.inSum.toFixed(1)}</td><td>${r.useSum.toFixed(1)}</td><td><b>${r.close.toFixed(1)}</b></td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다. ③매입·원료수불 탭에서 입력하세요.</p>`}
-    <p class="muted" style="margin-top:8px">단위: kg</p>
+      matRows.map(r=>`<tr><td class="l">${esc(r.mat)}</td><td>${f1(r.open)}</td><td>${f1(r.ins)}</td><td>${f1(r.use)}</td><td><b>${f1(r.close)}</b></td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다.</p>`}
+    <p class="muted" style="margin-top:8px">단위: kg · 입고=육안검사 기록, 사용=생산량×배합비 자동계산</p>
+  </div>
+  <div class="card"><h2>5. 육안검사일지 (원료 입고 검사)</h2>
+    ${insp.length?tbl(`<tr><th>일자</th><th class="l">품명</th><th>중량</th><th class="l">입고처</th><th>성적서</th><th>차량</th><th>성상</th><th>이물</th><th>적합</th><th class="l">조치</th></tr>`,
+      insp.map(r=>`<tr><td>${r.date}</td><td class="l">${esc(r.item)}</td><td>${num(r.weight)||""}</td><td class="l">${esc(r.source||"")}</td><td>${r.cert||""}</td><td>${r.carState||""}</td><td>${r.appearance||""}</td><td>${r.foreign||""}</td><td style="${r.result==="부적합"?"color:var(--warn);font-weight:700":""}">${r.result||""}</td><td class="l">${esc(r.action||"")}</td></tr>`).join("")):`<p class="muted">해당 월 육안검사(입고) 기록이 없습니다. ③탭에서 입력하세요.</p>`}
+  </div>
+  <div class="card"><h2>6. 폐기 물량 (전처리 손실)</h2>
+    ${wasteRows.length?tbl(`<tr><th class="l">원재료</th><th>폐기량(kg)</th><th class="l">비고</th></tr>`,
+      wasteRows.map(([mm,v])=>`<tr><td class="l">${esc(mm)}</td><td>${f1(v)}</td><td class="l">${mm==="배추"?"절임 20% 감소":mm==="무"?"절임 10% 감소":mm==="파프리카"?"건조 92% 감소":"전처리 손실"}</td></tr>`).join("")):`<p class="muted">해당 월 전처리 폐기 물량이 없습니다.</p>`}
+    <p class="muted" style="margin-top:8px">배추 절임(20%↓)·무 절임(10%↓)·파프리카 건조(92%↓) 시 원재료와 실사용의 차이를 폐기로 산정</p>
   </div>`;
 }
 function renderData(){
@@ -455,8 +598,8 @@ function renderData(){
   </div>`;
   $("#d_exp").onclick=()=>{const blob=new Blob([JSON.stringify(ST,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="바비야기HACCP백업_"+new Date().toISOString().slice(0,10)+".json";a.click();};
   $("#d_imp").onclick=()=>$("#d_impf").click();
-  $("#d_impf").onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());ST=Object.assign({sales:[],production:[],purchases:[],optionMap:{},reviews:[]},j);save();$("#d_msg").innerHTML=`<div class="ok">불러오기 완료</div>`;setTimeout(renderData,800);}catch(e){$("#d_msg").innerHTML=`<div class="warn">파일을 읽을 수 없습니다</div>`;}};
-  $("#d_clr").onclick=()=>{if(confirm("정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다. (먼저 백업 권장)")){ST={sales:[],production:[],purchases:[],optionMap:{},reviews:[]};save();renderData();}};
+  $("#d_impf").onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());ST=Object.assign({sales:[],production:[],purchases:[],inspections:[],optionMap:{},reviews:[],recipes:JSON.parse(JSON.stringify(RECIPES_DEFAULT))},j);save();$("#d_msg").innerHTML=`<div class="ok">불러오기 완료</div>`;setTimeout(renderData,800);}catch(e){$("#d_msg").innerHTML=`<div class="warn">파일을 읽을 수 없습니다</div>`;}};
+  $("#d_clr").onclick=()=>{if(confirm("정말 모든 데이터를 삭제할까요? 되돌릴 수 없습니다. (먼저 백업 권장)")){ST={sales:[],production:[],purchases:[],inspections:[],optionMap:{},reviews:[],recipes:JSON.parse(JSON.stringify(RECIPES_DEFAULT))};save();renderData();}};
 }
 // 초기화
 load(); render();
