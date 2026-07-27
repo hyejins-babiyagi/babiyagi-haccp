@@ -152,11 +152,29 @@ function wasteByMaterial(filterFn){
   (ST.production||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; const u=prodWaste(p); for(const m in u)w[m]=(w[m]||0)+u[m]; });
   return w;
 }
-// 원료별 입고량 (육안검사 중량 + 레거시 매입 inKg)
+// 중간재료 별칭(생산 품목명 -> 원물명). 이름이 같으면 자동 연결됨.
+const INTER_ALIAS={"순한김치베이스":"김치베이스"};
+function interName(product){return INTER_ALIAS[product]||product;}
+// 자체생산으로 재고에 가산할 중간재료만 (완제품 CANON은 판매로 차감하므로 제외)
+function madeByMaterial(filterFn){
+  const made={};
+  const usedNames=new Set();
+  (ST.production||[]).forEach(p=>{(p.lines||prodLines(p)||[]).forEach(l=>{if(l&&l.mat)usedNames.add(l.mat);});});
+  (ST.production||[]).forEach(p=>{
+    if(filterFn&&!filterFn(p.date))return;
+    const nm=interName(p.product);
+    if(CANON.indexOf(nm)>=0)return;                 // 완제품 제외
+    if(usedNames.has(nm)&&num(p.prodKg))made[nm]=(made[nm]||0)+num(p.prodKg);
+  });
+  return made;
+}
+// 원료별 입고량 (육안검사 중량 + 레거시 매입 inKg + 중간재료 자체생산)
 function inByMaterial(filterFn){
   const inn={};
   (ST.inspections||[]).forEach(x=>{ if(filterFn&&!filterFn(x.date))return; if(num(x.weight))inn[x.item]=(inn[x.item]||0)+num(x.weight); });
   (ST.purchases||[]).forEach(p=>{ if(filterFn&&!filterFn(p.date))return; if(num(p.inKg))inn[p.material]=(inn[p.material]||0)+num(p.inKg); });
+  const made=madeByMaterial(filterFn);
+  for(const m in made)inn[m]=(inn[m]||0)+made[m];
   return inn;
 }
 function save(){localStorage.setItem(KEY,JSON.stringify(ST));}
@@ -634,8 +652,9 @@ function buildReport(){
   // 원료수불: 기초(전월말) + 당월 입고(육안검사) - 당월 사용(생산×배합비)
   const inBefore=inByMaterial(beforeM), useBefore=usageByMaterial(beforeM);
   const inNow=inByMaterial(inM), useNow=usageByMaterial(inM);
+  const madeNow=madeByMaterial(inM);
   const mats=[...new Set([].concat(Object.keys(inBefore),Object.keys(useBefore),Object.keys(inNow),Object.keys(useNow)))].sort();
-  const matRows=mats.map(mat=>{const open=(inBefore[mat]||0)-(useBefore[mat]||0);const ins=inNow[mat]||0;const use=useNow[mat]||0;return {mat,open,ins,use,close:open+ins-use};}).filter(r=>r.open||r.ins||r.use);
+  const matRows=mats.map(mat=>{const open=(inBefore[mat]||0)-(useBefore[mat]||0);const made=madeNow[mat]||0;const ins=(inNow[mat]||0)-made;const use=useNow[mat]||0;return {mat,open,ins,made,use,close:open+ins+made-use};}).filter(r=>r.open||r.ins||r.made||r.use);
   // 폐기 물량(전처리 손실)
   const waste=wasteByMaterial(inM); const wasteRows=Object.entries(waste).filter(([mm,v])=>v>0.001).sort();
   const today=new Date().toISOString().slice(0,10);
@@ -680,9 +699,9 @@ function buildReport(){
   </div>
 
   <div class="card"><h2>4. 원료수불부</h2>
-    ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>사용</th><th>기말재고</th></tr>`,
-      matRows.map(r=>`<tr><td class="l">${esc(r.mat)}</td><td>${f1(r.open)}</td><td>${f1(r.ins)}</td><td>${f1(r.use)}</td><td style="${r.close<-0.001?"color:var(--warn);font-weight:700":"font-weight:700"}">${f1(r.close)}</td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다.</p>`}
-    <p class="muted" style="margin-top:8px">단위: kg · <b>입고</b>=육안검사일지 기록 · <b>사용</b>=생산일지 원물 사용량(절임·건조 손실 환산 포함)</p>
+    ${matRows.length?tbl(`<tr><th class="l">원료</th><th>기초재고</th><th>입고</th><th>자체생산</th><th>사용</th><th>기말재고</th></tr>`,
+      matRows.map(r=>`<tr><td class="l">${esc(r.mat)}</td><td>${f1(r.open)}</td><td>${f1(r.ins)}</td><td>${r.made?f1(r.made):""}</td><td>${f1(r.use)}</td><td style="${r.close<-0.001?"color:var(--warn);font-weight:700":"font-weight:700"}">${f1(r.close)}</td></tr>`).join("")):`<p class="muted">해당 월 원료 수불 기록이 없습니다.</p>`}
+    <p class="muted" style="margin-top:8px">단위: kg · <b>입고</b>=육안검사일지 기록 · <b>자체생산</b>=중간재료(김치베이스 등) 생산량 · <b>사용</b>=생산일지 원물 사용량(절임·건조 손실 환산 포함)</p>
   </div>
 
   <div class="card"><h2>[참고] 제품별 판매현황 · 전처리 손실</h2>
